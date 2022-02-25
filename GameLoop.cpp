@@ -8,6 +8,11 @@
 
 #include <vector>
 
+#ifdef _DEBUG
+#define VERBOSE_ON
+#define VALIDATION_ON
+#endif
+
 class HelloTriangleApplication 
 {
 public:
@@ -32,6 +37,7 @@ private:
     void initVulkan() 
     {
         createInstance();
+        setupDebugMessenger();
     }
 
     void mainLoop() 
@@ -44,6 +50,7 @@ private:
 
     void cleanup() 
     {
+        destroyDebugMessenger();
         vkDestroyInstance(instance, nullptr);
 
         glfwDestroyWindow(window);
@@ -53,26 +60,26 @@ private:
     void createInstance() 
     {
         // Fetch list of available instance extensions
-        uint32_t extCount = 0;
-        vkEnumerateInstanceExtensionProperties(nullptr, &extCount, nullptr);
-        std::vector<VkExtensionProperties> extensions(extCount);
-        vkEnumerateInstanceExtensionProperties(nullptr, &extCount, extensions.data());
+        uint32_t ext_count = 0;
+        vkEnumerateInstanceExtensionProperties(nullptr, &ext_count, nullptr);
+        std::vector<VkExtensionProperties> extensions(ext_count);
+        vkEnumerateInstanceExtensionProperties(nullptr, &ext_count, extensions.data());
+
+#ifdef VERBOSE_ON
         // dump the list
         std::cout << "Instance extensions" << std::endl;
         for (const auto& ext : extensions)
         {
             std::cout << '\t' << ext.extensionName << std::endl;
         }
+#endif
 
-        // glfw required extensionw list
-        uint32_t     glfwExtCount = 0;
-        const char** glfwExtensions;
-        glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtCount);
-        // dump the list
-        std::cout << std::endl << "glfw req'd extensions" << std::endl;
-        for (uint32_t i = 0; i < glfwExtCount; i++)
+        auto required_extensions = getRequiredExtensions();
+
+        // Check for validation layers, if requested
+        if (enable_validation && !checkValidationLayerSupport()) 
         {
-            std::cout << '\t' << glfwExtensions[i] << std::endl;
+            throw std::runtime_error("Validation layers requested, but not available!");
         }
 
         // App info struct
@@ -83,26 +90,148 @@ private:
         appInfo.engineVersion = 0;
         appInfo.apiVersion = VK_API_VERSION_1_0;            // Uses lcd 1.0 Vulkan API
 
-
         // Instance creation struct, which points at app info
         VkInstanceCreateInfo createInfo{ VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, nullptr };
         createInfo.pApplicationInfo = &appInfo;
-        createInfo.enabledExtensionCount = glfwExtCount;
-        createInfo.ppEnabledExtensionNames = glfwExtensions;
-        createInfo.enabledLayerCount = 0;   // Enable validation layers here
-        createInfo.ppEnabledLayerNames = nullptr;
+        createInfo.enabledExtensionCount = static_cast<uint32_t> (required_extensions.size());
+        createInfo.ppEnabledExtensionNames = required_extensions.data();
+        if (enable_validation)
+        {
+            createInfo.enabledLayerCount = static_cast<uint32_t> (validation_layers.size());
+            createInfo.ppEnabledLayerNames = validation_layers.data();
+        }
+        else
+        {
+            createInfo.enabledLayerCount = 0;
+            createInfo.ppEnabledLayerNames = nullptr;
+        }
 
         // create the instance
         VkResult res = vkCreateInstance(&createInfo, nullptr, &instance);
         if (VK_SUCCESS != res) throw std::runtime_error("FATAL - Failed to create instance.");
     }
 
+    bool checkValidationLayerSupport()
+    {
+        uint32_t layer_count;
+        vkEnumerateInstanceLayerProperties(&layer_count, nullptr);
+        std::vector<VkLayerProperties> layers(layer_count);
+        vkEnumerateInstanceLayerProperties(&layer_count, layers.data());
+
+#ifdef VERBOSE_ON
+        // dump the list
+        std::cout << std::endl << "Available validation layers" << std::endl;
+        for (uint32_t i = 0; i < layer_count; i++)
+        {
+            std::cout << '\t' << layers[i].layerName << std::endl;
+        }
+#endif
+
+        // verify that all specified validation layers are available
+        for (const char* layer : validation_layers)
+        {
+            bool found = false;
+            for (const auto& layer_properties : layers)
+            {
+                if (strcmp(layer, layer_properties.layerName) == 0)
+                {
+                    found = true;
+                    break;
+                }
+            }
+
+            if (!found) return false;
+        }
+
+        return true;
+    }
+
+    std::vector<const char*> getRequiredExtensions()
+    {
+        // glfw required extensions list
+        uint32_t     glfw_ext_count = 0;
+        const char** glfw_extensions;
+        glfw_extensions = glfwGetRequiredInstanceExtensions(&glfw_ext_count);
+
+        std::vector<const char*> required_extensions(glfw_extensions, glfw_extensions + glfw_ext_count);
+
+        if (enable_validation)
+        {
+            required_extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+        }
+
+#ifdef VERBOSE_ON
+        // dump the list
+        std::cout << std::endl << "All required extensions" << std::endl;
+        for (const auto& ext : required_extensions)
+        {
+            std::cout << '\t' << ext << std::endl;
+        }
+#endif
+        return required_extensions;
+    }
+
+    void setupDebugMessenger()
+    {
+        if (!enable_validation) return;
+
+        VkDebugUtilsMessengerCreateInfoEXT info{VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT, nullptr};
+
+        // select all severity above 'Info'
+        info.messageSeverity =  VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | 
+                                VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | 
+                                VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+        
+        // select all types
+        info.messageType =      VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | 
+                                VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | 
+                                VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+        
+        info.pfnUserCallback =  debugCallback;
+        info.pUserData =        nullptr;
+
+        // load the create function and call it
+        VkResult success = VK_ERROR_EXTENSION_NOT_PRESENT;
+        auto pCDUM_fxn = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT");
+        if (pCDUM_fxn != nullptr) success = pCDUM_fxn(instance, &info, nullptr, &debug_messenger);
+
+        if (VK_SUCCESS != success) throw std::runtime_error("Failed to set up debug messenger.");
+    }
+
+    void destroyDebugMessenger()
+    {
+        if (!enable_validation) return;
+
+        // load the destroy function and call it
+        auto pDDUM_fxn = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT");
+        if (pDDUM_fxn != nullptr) pDDUM_fxn(instance, debug_messenger, nullptr);
+    }
+
+    static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback( VkDebugUtilsMessageSeverityFlagBitsEXT         messageSeverity,
+                                                         VkDebugUtilsMessageTypeFlagsEXT                messageType,
+                                                         const VkDebugUtilsMessengerCallbackDataEXT*    pCallbackData,
+                                                         void*                                          pUserData) 
+    {
+        std::cerr << "Validation: " << pCallbackData->pMessage << std::endl;
+        return VK_FALSE;
+    }
+
 private:
     const uint32_t window_width = 1200;
     const uint32_t window_height = 900;
+    GLFWwindow* window;
 
     VkInstance instance;
-    GLFWwindow* window;
+    VkDebugUtilsMessengerEXT debug_messenger;
+
+    // conditional use of validation layers
+    const std::vector<const char*> validation_layers = {"VK_LAYER_KHRONOS_validation"};
+
+#ifdef VALIDATION_ON
+    const bool enable_validation = true;
+#else
+    const bool enable_validation = false;
+#endif
 };
 
 int main() 
