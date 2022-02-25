@@ -106,6 +106,14 @@ private:
             createInfo.ppEnabledLayerNames = nullptr;
         }
 
+        // include a debug messenger for instance creation/destruction
+        VkDebugUtilsMessengerCreateInfoEXT dum_ci{};
+        if (enable_validation)
+        {
+            populate_DUM_ci(dum_ci);
+            createInfo.pNext = &dum_ci;
+        }
+
         // create the instance
         VkResult res = vkCreateInstance(&createInfo, nullptr, &instance);
         if (VK_SUCCESS != res) throw std::runtime_error("FATAL - Failed to create instance.");
@@ -171,24 +179,30 @@ private:
         return required_extensions;
     }
 
+    void populate_DUM_ci(VkDebugUtilsMessengerCreateInfoEXT& ci)
+    {
+        ci = { VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT, nullptr };
+
+        // select all severity above 'Info'
+        ci.messageSeverity =    //VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
+                                VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                                VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+
+        // select all types
+        ci.messageType =        VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                                VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                                VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+
+        ci.pfnUserCallback =    debugCallback;
+        ci.pUserData =          nullptr;
+    }
+
     void setupDebugMessenger()
     {
         if (!enable_validation) return;
 
-        VkDebugUtilsMessengerCreateInfoEXT info{VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT, nullptr};
-
-        // select all severity above 'Info'
-        info.messageSeverity =  VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | 
-                                VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | 
-                                VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-        
-        // select all types
-        info.messageType =      VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | 
-                                VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | 
-                                VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-        
-        info.pfnUserCallback =  debugCallback;
-        info.pUserData =        nullptr;
+        VkDebugUtilsMessengerCreateInfoEXT info;
+        populate_DUM_ci(info);
 
         // load the create function and call it
         VkResult success = VK_ERROR_EXTENSION_NOT_PRESENT;
