@@ -1,4 +1,4 @@
-// Complete through https://vulkan-tutorial.com/en/Drawing_a_triangle/Setup/Validation_layers
+// Complete through https://vulkan-tutorial.com/en/Drawing_a_triangle/Setup/Physical_devices_and_queue_families
 
 //#include <vulkan/vulkan.h>
 #define GLFW_INCLUDE_VULKAN
@@ -40,6 +40,7 @@ private:
     {
         createInstance();
         setupDebugMessenger();
+        choosePhysicalDevice();
     }
 
     void mainLoop() 
@@ -90,7 +91,7 @@ private:
         appInfo.applicationVersion = VK_API_VERSION_1_0;    // App version, not API version, but format works so... 
         appInfo.pEngineName = "No Engine";
         appInfo.engineVersion = 0;
-        appInfo.apiVersion = VK_API_VERSION_1_0;            // Uses lcd 1.0 Vulkan API
+        appInfo.apiVersion = VK_HEADER_VERSION_COMPLETE;    // Use latest installed version (1.3)
 
         // Instance creation struct, which points at app info
         VkInstanceCreateInfo createInfo{ VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, nullptr };
@@ -112,7 +113,7 @@ private:
         VkDebugUtilsMessengerCreateInfoEXT dum_ci{};
         if (enable_validation)
         {
-            populate_DUM_ci(dum_ci);
+            populateDebugMessengerCI(dum_ci);
             createInfo.pNext = &dum_ci;
         }
 
@@ -181,7 +182,40 @@ private:
         return required_extensions;
     }
 
-    void populate_DUM_ci(VkDebugUtilsMessengerCreateInfoEXT& ci)
+    void choosePhysicalDevice()
+    {
+        uint32_t dev_count = 0;
+        vkEnumeratePhysicalDevices(instance, &dev_count, nullptr);
+        if (0 == dev_count) throw std::runtime_error("No Vulkan-capable physical devices");
+
+        std::vector<VkPhysicalDevice> devices(dev_count);
+        vkEnumeratePhysicalDevices(instance, &dev_count, devices.data());
+
+        for (const VkPhysicalDevice& device : devices)
+        {
+            if (physDeviceAcceptable(device))
+            {
+                physical_device = device;
+                break;
+            }
+        }
+
+        if (VK_NULL_HANDLE == physical_device) throw std::runtime_error("No suitable physical device found");
+    }
+
+    bool physDeviceAcceptable(VkPhysicalDevice dev)
+    {
+        VkPhysicalDeviceProperties2 dev_props = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2_KHR, nullptr };
+        VkPhysicalDeviceFeatures2   dev_features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2_KHR, nullptr };
+
+        vkGetPhysicalDeviceProperties2(dev, &dev_props);
+        vkGetPhysicalDeviceFeatures2(dev, &dev_features);
+
+        // Filter on min properties & features here
+        return true; // for now, any Vulkan device is ok
+    }
+
+    void populateDebugMessengerCI(VkDebugUtilsMessengerCreateInfoEXT& ci)
     {
         ci = { VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT, nullptr };
 
@@ -204,7 +238,7 @@ private:
         if (!enable_validation) return;
 
         VkDebugUtilsMessengerCreateInfoEXT info;
-        populate_DUM_ci(info);
+        populateDebugMessengerCI(info);
 
         // load the create function and call it
         VkResult success = VK_ERROR_EXTENSION_NOT_PRESENT;
@@ -233,12 +267,13 @@ private:
     }
 
 private:
-    const uint32_t window_width = 1200;
-    const uint32_t window_height = 900;
-    GLFWwindow* window;
+    const uint32_t  window_width = 1200;
+    const uint32_t  window_height = 900;
+    GLFWwindow*     window;
 
-    VkInstance instance;
-    VkDebugUtilsMessengerEXT debug_messenger;
+    VkInstance                  instance;
+    VkPhysicalDevice            physical_device = VK_NULL_HANDLE;
+    VkDebugUtilsMessengerEXT    debug_messenger;
 
     // conditional use of validation layers
     const std::vector<const char*> validation_layers = {"VK_LAYER_KHRONOS_validation"};
@@ -260,7 +295,7 @@ int main()
     }
     catch (const std::exception& e) 
     {
-        std::cerr << e.what() << std::endl;
+        std::cerr << std::endl << "EXCEPTION: " << e.what() << std::endl;
         return EXIT_FAILURE;
     }
 
