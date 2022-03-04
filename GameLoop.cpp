@@ -1,8 +1,11 @@
 // Complete through https://vulkan-tutorial.com/en/Drawing_a_triangle/Setup/Physical_devices_and_queue_families
 
 //#include <vulkan/vulkan.h>
+#define VK_USE_PLATFORM_WIN32_KHR
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3native.h>
 
 #include <iostream>
 #include <stdexcept>
@@ -41,6 +44,7 @@ private:
     {
         createInstance();
         setupDebugMessenger();
+        createSurface();
         choosePhysicalDevice();
         createLogicalDevice();
     }
@@ -57,6 +61,7 @@ private:
     {
         vkDestroyDevice(device, nullptr);
         destroyDebugMessenger();
+        vkDestroySurfaceKHR(instance, surface, nullptr);
         vkDestroyInstance(instance, nullptr);
 
         glfwDestroyWindow(window);
@@ -183,6 +188,26 @@ private:
         }
 #endif
         return required_extensions;
+    }
+
+    void createSurface()
+    {
+#if 0
+        // 'by-hand' version
+        VkWin32SurfaceCreateInfoKHR surf_ci = { VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR, nullptr };
+        surf_ci.hwnd = glfwGetWin32Window(window);
+        surf_ci.hinstance = GetModuleHandle(nullptr);   // HINSTANCE of current process
+        if (vkCreateWin32SurfaceKHR(instance, &surf_ci, nullptr, &surface) != VK_SUCCESS) 
+        {
+            throw std::runtime_error("Failed to create window surface!");
+        }
+#endif
+
+        // Use glfw to create surface for us
+        if (VK_SUCCESS != glfwCreateWindowSurface(instance, window, nullptr, &surface))
+        {
+            throw std::runtime_error("Failed to create window surface!");
+        }
     }
 
     void choosePhysicalDevice()
@@ -372,11 +397,12 @@ private:
     const uint32_t  window_height = 900;
     GLFWwindow*     window;
 
-    VkInstance                  instance;
-    VkPhysicalDevice            physical_device = VK_NULL_HANDLE;
-    VkDevice                    device = VK_NULL_HANDLE;    // logical device
-    VkQueue                     gfx_queue = VK_NULL_HANDLE;
-    VkDebugUtilsMessengerEXT    debug_messenger;
+    VkInstance                  instance            = VK_NULL_HANDLE;
+    VkSurfaceKHR                surface             = VK_NULL_HANDLE;
+    VkPhysicalDevice            physical_device     = VK_NULL_HANDLE;
+    VkDevice                    device              = VK_NULL_HANDLE;    // logical device
+    VkQueue                     gfx_queue           = VK_NULL_HANDLE;
+    VkDebugUtilsMessengerEXT    debug_messenger     = VK_NULL_HANDLE;
 
     // conditional use of validation layers
     const std::vector<const char*> validation_layers = {"VK_LAYER_KHRONOS_validation"};
