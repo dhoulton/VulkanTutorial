@@ -1,4 +1,4 @@
-// Complete through https://vulkan-tutorial.com/en/Drawing_a_triangle/Setup/Physical_devices_and_queue_families
+// Complete through https://vulkan-tutorial.com/en/Drawing_a_triangle/Presentation/Window_surface_queue_families
 
 //#include <vulkan/vulkan.h>
 #define VK_USE_PLATFORM_WIN32_KHR
@@ -12,6 +12,7 @@
 #include <cstdlib>
 
 #include <vector>
+#include <set>
 #include <optional>
 
 #ifdef _DEBUG
@@ -19,7 +20,7 @@
 #define VALIDATION_ON
 #endif
 
-class HelloTriangleApplication 
+class HelloTriangleApplication
 {
 public:
     void run() 
@@ -31,8 +32,10 @@ public:
     }
 
 private:
-    void initWindow() 
+    void initWindow()
     {
+        glfwSetErrorCallback(glfwErrorCallback);
+
         glfwInit();
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
         glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
@@ -239,9 +242,11 @@ private:
         std::optional<uint32_t> sparse_binding_family;
         std::optional<uint32_t> protected_family;
 
-        bool isComplete()   // minimal required set of queues are present (just gfx, for the moment)
+        std::optional<uint32_t> present_family;
+
+        bool isComplete()   // minimal required set of queues are present
         {
-            return graphics_family.has_value();
+            return (graphics_family.has_value() && present_family.has_value());
         }
     };
 
@@ -265,18 +270,18 @@ private:
         return queue_fam_idx.isComplete();
     }
 
-    QueueFamilies findDeviceQueueFamilies(VkPhysicalDevice dev)
+    QueueFamilies findDeviceQueueFamilies(VkPhysicalDevice phys)
     {
         QueueFamilies family_indices;
         uint32_t fam_count = 0;
-        vkGetPhysicalDeviceQueueFamilyProperties2(dev, &fam_count, nullptr);
+        vkGetPhysicalDeviceQueueFamilyProperties2(phys, &fam_count, nullptr);
         if (fam_count > 0)
         {
             std::vector<VkQueueFamilyProperties2> fam_props(fam_count);
             for (auto& fam : fam_props) fam = { VK_STRUCTURE_TYPE_QUEUE_FAMILY_PROPERTIES_2, nullptr };
-            vkGetPhysicalDeviceQueueFamilyProperties2(dev, &fam_count, fam_props.data());
+            vkGetPhysicalDeviceQueueFamilyProperties2(phys, &fam_count, fam_props.data());
 
-            // 
+            // possible (if unlikely) that gfx and present are different queue indices
             int idx = 0;
             for (const auto& fam : fam_props)
             {
@@ -285,6 +290,12 @@ private:
                 if (fam.queueFamilyProperties.queueFlags & VK_QUEUE_TRANSFER_BIT)       family_indices.transfer_family = idx;
                 if (fam.queueFamilyProperties.queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) family_indices.sparse_binding_family = idx;
                 if (fam.queueFamilyProperties.queueFlags & VK_QUEUE_PROTECTED_BIT)      family_indices.protected_family = idx;
+
+                VkBool32 has_present = VK_FALSE;
+                vkGetPhysicalDeviceSurfaceSupportKHR(phys, idx, surface, &has_present);
+                if (has_present) family_indices.present_family = idx;
+                if (family_indices.isComplete()) break;
+
                 idx++;
             }
         }
@@ -297,19 +308,25 @@ private:
         QueueFamilies queue_idx = findDeviceQueueFamilies(physical_device);
         float queue_priority = 1.0f;
 
-        // Queues
-        VkDeviceQueueCreateInfo dev_q_ci = { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, nullptr };
-        dev_q_ci.queueFamilyIndex = queue_idx.graphics_family.value();
-        dev_q_ci.queueCount = 1;
-        dev_q_ci.pQueuePriorities = &queue_priority;    // highest priority (range 0.0...1.0)
+        // Queues (gfx & present - which may be the same family - so creating either 1 or 2 queues)
+        std::vector<VkDeviceQueueCreateInfo> dev_q_ci;// = { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, nullptr };
+        std::set<uint32_t> unique_q_families = { queue_idx.graphics_family.value(), queue_idx.present_family.value() };
+        for (uint32_t q_fam : unique_q_families)
+        {
+            VkDeviceQueueCreateInfo ci = { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, nullptr };
+            ci.queueFamilyIndex = q_fam;
+            ci.queueCount = 1;
+            ci.pQueuePriorities = &queue_priority;    // highest priority (range 0.0...1.0)
+            dev_q_ci.push_back(ci);
+        }
 
         // Features (none for now)
         VkPhysicalDeviceFeatures2 dev_features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, nullptr };
 
         // Logical Device
         VkDeviceCreateInfo dev_ci = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, nullptr };
-        dev_ci.pQueueCreateInfos = &dev_q_ci;
-        dev_ci.queueCreateInfoCount = 1;
+        dev_ci.pQueueCreateInfos = dev_q_ci.data();
+        dev_ci.queueCreateInfoCount = static_cast<uint32_t>(dev_q_ci.size());
         dev_ci.pEnabledFeatures = &dev_features.features;
         
 #if 0
@@ -339,6 +356,9 @@ private:
         q_info.queueFamilyIndex = queue_idx.graphics_family.value();
         q_info.queueIndex = 0;
         vkGetDeviceQueue2(device, &q_info, &gfx_queue);
+
+        q_info.queueFamilyIndex = queue_idx.present_family.value();
+        vkGetDeviceQueue2(device, &q_info, &present_queue);
     }
 
     void populateDebugMessengerCI(VkDebugUtilsMessengerCreateInfoEXT& ci)
@@ -392,6 +412,11 @@ private:
         return VK_FALSE;
     }
 
+    static void glfwErrorCallback(int code, const char* description)
+    {
+        std::cerr << std::endl << "GLFW Error " << code << ": " << description << std::endl;
+    }
+
 private:
     const uint32_t  window_width = 1200;
     const uint32_t  window_height = 900;
@@ -402,6 +427,7 @@ private:
     VkPhysicalDevice            physical_device     = VK_NULL_HANDLE;
     VkDevice                    device              = VK_NULL_HANDLE;    // logical device
     VkQueue                     gfx_queue           = VK_NULL_HANDLE;
+    VkQueue                     present_queue       = VK_NULL_HANDLE;
     VkDebugUtilsMessengerEXT    debug_messenger     = VK_NULL_HANDLE;
 
     // conditional use of validation layers
