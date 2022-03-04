@@ -1,4 +1,4 @@
-// Complete through https://vulkan-tutorial.com/en/Drawing_a_triangle/Presentation/Window_surface_queue_families
+// Complete through https://vulkan-tutorial.com/en/Drawing_a_triangle/Presentation/Swap_chain
 
 //#include <vulkan/vulkan.h>
 #define VK_USE_PLATFORM_WIN32_KHR
@@ -88,7 +88,7 @@ private:
         }
 #endif
 
-        auto required_extensions = getRequiredExtensions();
+        auto required_extensions = getRequiredInstanceExtensions();
 
         // Check for validation layers, if requested
         if (enable_validation && !checkValidationLayerSupport()) 
@@ -168,7 +168,7 @@ private:
         return true;
     }
 
-    std::vector<const char*> getRequiredExtensions()
+    std::vector<const char*> getRequiredInstanceExtensions()
     {
         // glfw required extensions list
         uint32_t     glfw_ext_count = 0;
@@ -250,13 +250,13 @@ private:
         }
     };
 
-    bool physDeviceAcceptable(VkPhysicalDevice dev)
+    bool physDeviceAcceptable(VkPhysicalDevice phys)
     {
         VkPhysicalDeviceProperties2 dev_props = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2_KHR, nullptr };
         VkPhysicalDeviceFeatures2   dev_features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2_KHR, nullptr };
 
-        vkGetPhysicalDeviceProperties2(dev, &dev_props);
-        vkGetPhysicalDeviceFeatures2(dev, &dev_features);
+        vkGetPhysicalDeviceProperties2(phys, &dev_props);
+        vkGetPhysicalDeviceFeatures2(phys, &dev_features);
 
         // Filter on min properties & features here, e.g.
         if (VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU == dev_props.properties.deviceType &&
@@ -265,9 +265,13 @@ private:
             bool gpu_ok = true; // ignore this for now, any Vulkan device is ok
         }
 
+        // Check for required device extensions
+        bool has_extensions = checkDeviceExtensions(phys);
+
         // Check for presence of required queues
-        QueueFamilies queue_fam_idx = findDeviceQueueFamilies(dev);
-        return queue_fam_idx.isComplete();
+        QueueFamilies queue_fam_idx = findDeviceQueueFamilies(phys);
+        
+        return (queue_fam_idx.isComplete() && has_extensions);
     }
 
     QueueFamilies findDeviceQueueFamilies(VkPhysicalDevice phys)
@@ -303,6 +307,32 @@ private:
         return family_indices;
     }
 
+    bool checkDeviceExtensions(VkPhysicalDevice phys)
+    {
+        uint32_t ext_count = 0;
+        vkEnumerateDeviceExtensionProperties(phys, nullptr, &ext_count, nullptr);
+        if (0 == ext_count) return false;
+
+        std::vector<VkExtensionProperties> ext_props(ext_count);
+        vkEnumerateDeviceExtensionProperties(phys, nullptr, &ext_count, ext_props.data());
+
+#ifdef VERBOSE_ON
+        // dump the list
+        std::cout << std::endl << "Device extensions" << std::endl;
+        for (const auto& ext : ext_props)
+        {
+            std::cout << '\t' << ext.extensionName << std::endl;
+        }
+#endif
+
+
+        // Create set of req'd, erase each one as found in the available list
+        std::set<std::string> required_set(device_extensions.begin(), device_extensions.end());
+        for (const auto& ext : ext_props) required_set.erase(ext.extensionName);
+
+        return required_set.empty();
+    }
+
     void createLogicalDevice()
     {
         QueueFamilies queue_idx = findDeviceQueueFamilies(physical_device);
@@ -328,6 +358,8 @@ private:
         dev_ci.pQueueCreateInfos = dev_q_ci.data();
         dev_ci.queueCreateInfoCount = static_cast<uint32_t>(dev_q_ci.size());
         dev_ci.pEnabledFeatures = &dev_features.features;
+        dev_ci.enabledExtensionCount = static_cast<uint32_t>(device_extensions.size());
+        dev_ci.ppEnabledExtensionNames = device_extensions.data();
         
 #if 0
         // these are obsoleted and ignored after 1.0, but may be set for backwards compatibility
@@ -432,6 +464,9 @@ private:
 
     // conditional use of validation layers
     const std::vector<const char*> validation_layers = {"VK_LAYER_KHRONOS_validation"};
+
+    // required device extensions
+    const std::vector<const char*> device_extensions = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
 
 #ifdef VALIDATION_ON
     const bool enable_validation = true;
