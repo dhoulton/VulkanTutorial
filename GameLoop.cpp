@@ -9,6 +9,7 @@
 #include <cstdlib>
 
 #include <vector>
+#include <optional>
 
 #ifdef _DEBUG
 #define VERBOSE_ON
@@ -203,6 +204,20 @@ private:
         if (VK_NULL_HANDLE == physical_device) throw std::runtime_error("No suitable physical device found");
     }
 
+    struct QueueFamilies
+    {
+        std::optional<uint32_t> graphics_family;
+        std::optional<uint32_t> compute_family;
+        std::optional<uint32_t> transfer_family;
+        std::optional<uint32_t> sparse_binding_family;
+        std::optional<uint32_t> protected_family;
+
+        bool isComplete()   // minimal required set of queues are present (just gfx, for the moment)
+        {
+            return graphics_family.has_value();
+        }
+    };
+
     bool physDeviceAcceptable(VkPhysicalDevice dev)
     {
         VkPhysicalDeviceProperties2 dev_props = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2_KHR, nullptr };
@@ -211,8 +226,42 @@ private:
         vkGetPhysicalDeviceProperties2(dev, &dev_props);
         vkGetPhysicalDeviceFeatures2(dev, &dev_features);
 
-        // Filter on min properties & features here
-        return true; // for now, any Vulkan device is ok
+        // Filter on min properties & features here, e.g.
+        if (VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU == dev_props.properties.deviceType &&
+            dev_features.features.vertexPipelineStoresAndAtomics)
+        {
+            bool gpu_ok = true; // ignore this for now, any Vulkan device is ok
+        }
+
+        // Check for presence of required queues
+        QueueFamilies queue_fam_idx = findDeviceQueueFamilies(dev);
+        return queue_fam_idx.isComplete();
+    }
+
+    QueueFamilies findDeviceQueueFamilies(VkPhysicalDevice dev)
+    {
+        QueueFamilies family_indices;
+        uint32_t fam_count = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties2(dev, &fam_count, nullptr);
+        if (fam_count > 0)
+        {
+            std::vector<VkQueueFamilyProperties2> fam_props(fam_count);
+            for (auto& fam : fam_props) fam = { VK_STRUCTURE_TYPE_QUEUE_FAMILY_PROPERTIES_2, nullptr };
+            vkGetPhysicalDeviceQueueFamilyProperties2(dev, &fam_count, fam_props.data());
+
+            // 
+            int idx = 0;
+            for (const auto& fam : fam_props)
+            {
+                if (fam.queueFamilyProperties.queueFlags & VK_QUEUE_GRAPHICS_BIT)       family_indices.graphics_family = idx++;
+                if (fam.queueFamilyProperties.queueFlags & VK_QUEUE_COMPUTE_BIT)        family_indices.compute_family = idx++;
+                if (fam.queueFamilyProperties.queueFlags & VK_QUEUE_TRANSFER_BIT)       family_indices.transfer_family = idx++;
+                if (fam.queueFamilyProperties.queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) family_indices.sparse_binding_family = idx++;
+                if (fam.queueFamilyProperties.queueFlags & VK_QUEUE_PROTECTED_BIT)      family_indices.protected_family = idx++;
+            }
+        }
+
+        return family_indices;
     }
 
     void populateDebugMessengerCI(VkDebugUtilsMessengerCreateInfoEXT& ci)
