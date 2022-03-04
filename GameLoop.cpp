@@ -42,6 +42,7 @@ private:
         createInstance();
         setupDebugMessenger();
         choosePhysicalDevice();
+        createLogicalDevice();
     }
 
     void mainLoop() 
@@ -54,6 +55,7 @@ private:
 
     void cleanup() 
     {
+        vkDestroyDevice(device, nullptr);
         destroyDebugMessenger();
         vkDestroyInstance(instance, nullptr);
 
@@ -253,15 +255,65 @@ private:
             int idx = 0;
             for (const auto& fam : fam_props)
             {
-                if (fam.queueFamilyProperties.queueFlags & VK_QUEUE_GRAPHICS_BIT)       family_indices.graphics_family = idx++;
-                if (fam.queueFamilyProperties.queueFlags & VK_QUEUE_COMPUTE_BIT)        family_indices.compute_family = idx++;
-                if (fam.queueFamilyProperties.queueFlags & VK_QUEUE_TRANSFER_BIT)       family_indices.transfer_family = idx++;
-                if (fam.queueFamilyProperties.queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) family_indices.sparse_binding_family = idx++;
-                if (fam.queueFamilyProperties.queueFlags & VK_QUEUE_PROTECTED_BIT)      family_indices.protected_family = idx++;
+                if (fam.queueFamilyProperties.queueFlags & VK_QUEUE_GRAPHICS_BIT)       family_indices.graphics_family = idx;
+                if (fam.queueFamilyProperties.queueFlags & VK_QUEUE_COMPUTE_BIT)        family_indices.compute_family = idx;
+                if (fam.queueFamilyProperties.queueFlags & VK_QUEUE_TRANSFER_BIT)       family_indices.transfer_family = idx;
+                if (fam.queueFamilyProperties.queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) family_indices.sparse_binding_family = idx;
+                if (fam.queueFamilyProperties.queueFlags & VK_QUEUE_PROTECTED_BIT)      family_indices.protected_family = idx;
+                idx++;
             }
         }
 
         return family_indices;
+    }
+
+    void createLogicalDevice()
+    {
+        QueueFamilies queue_idx = findDeviceQueueFamilies(physical_device);
+        float queue_priority = 1.0f;
+
+        // Queues
+        VkDeviceQueueCreateInfo dev_q_ci = { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, nullptr };
+        dev_q_ci.queueFamilyIndex = queue_idx.graphics_family.value();
+        dev_q_ci.queueCount = 1;
+        dev_q_ci.pQueuePriorities = &queue_priority;    // highest priority (range 0.0...1.0)
+
+        // Features (none for now)
+        VkPhysicalDeviceFeatures2 dev_features = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, nullptr };
+
+        // Logical Device
+        VkDeviceCreateInfo dev_ci = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, nullptr };
+        dev_ci.pQueueCreateInfos = &dev_q_ci;
+        dev_ci.queueCreateInfoCount = 1;
+        dev_ci.pEnabledFeatures = &dev_features.features;
+        
+#if 0
+        // these are obsoleted and ignored after 1.0, but may be set for backwards compatibility
+        dev_ci.enabledExtensionCount = 0;
+        if (enable_validation)
+        {
+            dev_ci.enabledLayerCount = static_cast<uint32_t>(validation_layers.size());
+            dev_ci.ppEnabledLayerNames = validation_layers.data();
+        }
+        else
+        {
+            dev_ci.enabledLayerCount = 0;
+        }
+#endif
+
+        // Create the device
+        if (VK_SUCCESS != vkCreateDevice(physical_device, &dev_ci, nullptr, &device))
+        {
+            throw std::runtime_error("Failed to create logical device");
+        }
+
+        // Query the device's queue handle(s)
+        // (previously...) vkGetDeviceQueue(device, queue_idx.graphics_family.value(), 0, &gfx_queue);
+        VkDeviceQueueInfo2 q_info = { VK_STRUCTURE_TYPE_DEVICE_QUEUE_INFO_2, nullptr };
+        q_info.flags = 0;
+        q_info.queueFamilyIndex = queue_idx.graphics_family.value();
+        q_info.queueIndex = 0;
+        vkGetDeviceQueue2(device, &q_info, &gfx_queue);
     }
 
     void populateDebugMessengerCI(VkDebugUtilsMessengerCreateInfoEXT& ci)
@@ -322,6 +374,8 @@ private:
 
     VkInstance                  instance;
     VkPhysicalDevice            physical_device = VK_NULL_HANDLE;
+    VkDevice                    device = VK_NULL_HANDLE;    // logical device
+    VkQueue                     gfx_queue = VK_NULL_HANDLE;
     VkDebugUtilsMessengerEXT    debug_messenger;
 
     // conditional use of validation layers
