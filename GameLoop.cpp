@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <cstdlib>
 
+#include <algorithm>
 #include <vector>
 #include <set>
 #include <optional>
@@ -50,6 +51,7 @@ private:
         createSurface();
         choosePhysicalDevice();
         createLogicalDevice();
+        createSwapChain();
     }
 
     void mainLoop() 
@@ -62,6 +64,7 @@ private:
 
     void cleanup() 
     {
+        vkDestroySwapchainKHR(device, swapchain, nullptr);
         vkDestroyDevice(device, nullptr);
         destroyDebugMessenger();
         vkDestroySurfaceKHR(instance, surface, nullptr);
@@ -437,6 +440,94 @@ private:
         return swap;
     }
     
+    VkSurfaceFormatKHR chooseSwapFormat(const std::vector<VkSurfaceFormatKHR>& formats)
+    {
+        // Look for our 'ideal' surface format. If not available, then just use first listed
+        for (const auto& format : formats)
+        {
+            if ((VK_FORMAT_B8G8R8A8_SRGB == format.format) && (VK_COLOR_SPACE_SRGB_NONLINEAR_KHR == format.colorSpace))
+                return format;
+        }
+        return formats[0];
+    }
+
+    VkPresentModeKHR choosePresentMode(const std::vector<VkPresentModeKHR>& modes)
+    {
+        // Use mailbox if available for least possible latency. If not, use FIFO
+        for (const auto& mode : modes)
+        {
+            if (VK_PRESENT_MODE_MAILBOX_KHR == mode) return mode;
+        }
+        
+        return VK_PRESENT_MODE_FIFO_KHR;    // guaranteed available by spec
+    }
+
+    VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& caps)
+    {
+        const uint32_t swap_controlled = 0xffffffff;
+        if (swap_controlled != caps.currentExtent.width) return caps.currentExtent; // Not controllable by swapchain
+
+        int w, h;
+        glfwGetFramebufferSize(window, &w, &h);
+        VkExtent2D ext;
+        ext.width = std::clamp(static_cast<uint32_t>(w), caps.minImageExtent.width, caps.maxImageExtent.width);
+        ext.height = std::clamp(static_cast<uint32_t>(h), caps.minImageExtent.height, caps.maxImageExtent.height);
+        return ext;
+    }
+
+    void createSwapChain()
+    {
+        SwapChainDetails swap_details = querySwapChainSupport(physical_device);
+        VkPresentModeKHR swap_mode = choosePresentMode(swap_details.modes);
+
+        swapchain_format = chooseSwapFormat(swap_details.formats);
+        swapchain_extent = chooseSwapExtent(swap_details.caps);
+
+        uint32_t image_count = swap_details.caps.maxImageCount;
+        if (0 == image_count) image_count = swap_details.caps.minImageCount + 1;    // max == 0 is flag for 'no limit'
+
+        // Build up the swapchain CI
+        VkSwapchainCreateInfoKHR swap_ci = { VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, nullptr };
+        swap_ci.surface = surface;
+        swap_ci.minImageCount = image_count;
+        swap_ci.imageFormat = swapchain_format.format;
+        swap_ci.imageColorSpace = swapchain_format.colorSpace;
+        swap_ci.imageExtent = swapchain_extent;
+        swap_ci.imageArrayLayers = 1;
+        swap_ci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;   // rendering directly to swap images
+        swap_ci.presentMode = swap_mode;
+        swap_ci.clipped = VK_TRUE;  // Don't render pixels that are obscured or clipped
+        swap_ci.preTransform = swap_details.caps.currentTransform;  // No image transform
+        swap_ci.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR; // Don't blend over other windows
+        swap_ci.oldSwapchain = VK_NULL_HANDLE;  // This is not a replacement swapchain
+
+        QueueFamilies q_idx = findDeviceQueueFamilies(physical_device);
+        uint32_t qfi[] = { q_idx.graphics_family.value(), q_idx.present_family.value() };
+        if (q_idx.graphics_family != q_idx.present_family)
+        {
+            swap_ci.imageSharingMode = VK_SHARING_MODE_CONCURRENT;  // shared between queue families (without explicit xfers)
+            swap_ci.queueFamilyIndexCount = 2;
+            swap_ci.pQueueFamilyIndices = qfi;
+        }
+        else
+        {
+            swap_ci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;   // not shared
+            swap_ci.queueFamilyIndexCount = 0;
+            swap_ci.pQueueFamilyIndices = nullptr;
+        }
+
+        if (VK_SUCCESS != vkCreateSwapchainKHR(device, &swap_ci, nullptr, &swapchain))
+        {
+            throw std::runtime_error("Failed to create swap chain");
+        }
+
+        // Retrieve handles for the swapchain images
+        image_count = 0;
+        vkGetSwapchainImagesKHR(device, swapchain, &image_count, nullptr);
+        swapchain_images.resize(image_count);
+        vkGetSwapchainImagesKHR(device, swapchain, &image_count, swapchain_images.data());
+    }
+
     void populateDebugMessengerCI(VkDebugUtilsMessengerCreateInfoEXT& ci)
     {
         ci = { VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT, nullptr };
@@ -505,6 +596,10 @@ private:
     VkQueue                     gfx_queue           = VK_NULL_HANDLE;
     VkQueue                     present_queue       = VK_NULL_HANDLE;
     VkDebugUtilsMessengerEXT    debug_messenger     = VK_NULL_HANDLE;
+    VkSwapchainKHR              swapchain           = VK_NULL_HANDLE;
+    VkSurfaceFormatKHR          swapchain_format;
+    VkExtent2D                  swapchain_extent;
+    std::vector<VkImage>        swapchain_images;
 
     // conditional use of validation layers
     const std::vector<const char*> validation_layers = {"VK_LAYER_KHRONOS_validation"};
