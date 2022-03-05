@@ -268,10 +268,18 @@ private:
         // Check for required device extensions
         bool has_extensions = checkDeviceExtensions(phys);
 
+        // Verify swap chain support
+        bool swap_chain_ok = false;
+        if (has_extensions)
+        {
+            SwapChainDetails swap_details = querySwapChainSupport(phys);
+            swap_chain_ok = !swap_details.formats.empty() && !swap_details.modes.empty();   // anything goes
+        }
+
         // Check for presence of required queues
         QueueFamilies queue_fam_idx = findDeviceQueueFamilies(phys);
         
-        return (queue_fam_idx.isComplete() && has_extensions);
+        return (queue_fam_idx.isComplete() && swap_chain_ok);
     }
 
     QueueFamilies findDeviceQueueFamilies(VkPhysicalDevice phys)
@@ -324,7 +332,6 @@ private:
             std::cout << '\t' << ext.extensionName << std::endl;
         }
 #endif
-
 
         // Create set of req'd, erase each one as found in the available list
         std::set<std::string> required_set(device_extensions.begin(), device_extensions.end());
@@ -393,6 +400,43 @@ private:
         vkGetDeviceQueue2(device, &q_info, &present_queue);
     }
 
+    struct SwapChainDetails
+    {
+        VkSurfaceCapabilitiesKHR caps;
+        std::vector<VkSurfaceFormatKHR> formats;
+        std::vector<VkPresentModeKHR> modes;
+    };
+
+    SwapChainDetails querySwapChainSupport(VkPhysicalDevice phys)
+    {
+        SwapChainDetails swap;
+
+        //vkGetPhysicalDeviceSurfaceCapabilities2KHR()
+
+        // capabilities
+        vkGetPhysicalDeviceSurfaceCapabilitiesKHR(phys, surface, &swap.caps);
+
+        // formats
+        uint32_t count = 0;
+        vkGetPhysicalDeviceSurfaceFormatsKHR(phys, surface, &count, nullptr);
+        if (0 < count)
+        {
+            swap.formats.resize(count);
+            vkGetPhysicalDeviceSurfaceFormatsKHR(phys, surface, &count, swap.formats.data());
+        }
+
+        // presentation modes
+        count = 0;
+        vkGetPhysicalDeviceSurfacePresentModesKHR(phys, surface, &count, nullptr);
+        if (0 < count)
+        {
+            swap.modes.resize(count);
+            vkGetPhysicalDeviceSurfacePresentModesKHR(phys, surface, &count, swap.modes.data());
+        }
+
+        return swap;
+    }
+    
     void populateDebugMessengerCI(VkDebugUtilsMessengerCreateInfoEXT& ci)
     {
         ci = { VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT, nullptr };
