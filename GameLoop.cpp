@@ -1,4 +1,4 @@
-// Complete through https://vulkan-tutorial.com/en/Drawing_a_triangle/Presentation/Image_views
+// Complete through https://vulkan-tutorial.com/en/Drawing_a_triangle/Graphics_pipeline_basics/Fixed_functions
 
 //#include <vulkan/vulkan.h>
 #define VK_USE_PLATFORM_WIN32_KHR
@@ -12,6 +12,7 @@
 #include <cstdlib>
 
 #include <algorithm>
+#include <fstream>
 #include <vector>
 #include <set>
 #include <optional>
@@ -53,6 +54,7 @@ private:
         createLogicalDevice();
         createSwapChain();
         createImageViews();
+        createGraphicsPipeline();
     }
 
     void mainLoop() 
@@ -65,6 +67,7 @@ private:
 
     void cleanup() 
     {
+        vkDestroyPipelineLayout(device, pipeline_layout, nullptr);
         for (auto& imageview : swapchain_image_views) vkDestroyImageView(device, imageview, nullptr);
         vkDestroySwapchainKHR(device, swapchain, nullptr);
         vkDestroyDevice(device, nullptr);
@@ -557,6 +560,189 @@ private:
         }
     }
 
+    static std::vector<char> readSPIRV(const std::string& filename)
+    {
+        std::ifstream file(filename, std::ios::ate | std::ios::binary);
+        if (!file.is_open()) throw std::runtime_error(std::string("Failed to open shader file: " + filename));
+
+        size_t file_size = (size_t)file.tellg();
+        std::vector<char> buffer(file_size);
+        file.seekg(0);
+        file.read(buffer.data(), file_size);
+
+#ifdef VERBOSE_ON
+        std::cout << std::endl << "Read SPIR-V shader file " << filename << ", size  = " << file_size << " bytes." << std::endl;
+#endif
+
+        file.close();
+        return buffer;
+    }
+
+    VkShaderModule createShaderModule(const std::vector<char>& spirv)
+    {
+        VkShaderModuleCreateInfo ci = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, nullptr };
+        ci.codeSize = spirv.size();
+        ci.pCode = reinterpret_cast<const uint32_t*>(spirv.data());
+
+        VkShaderModule shader;
+        if (VK_SUCCESS != vkCreateShaderModule(device, &ci, nullptr, &shader)) throw std::runtime_error("Failed to create shader module");
+        return shader;
+    }
+
+    void createGraphicsPipeline()
+    {
+        /////////////////////////////////////////////////////////////
+        // Shaders
+        /////////////////////////////////////////////////////////////
+        auto vert_shader = readSPIRV("vert.spv");
+        auto frag_shader = readSPIRV("frag.spv");
+
+        VkShaderModule vert_shader_module = createShaderModule(vert_shader);
+        VkShaderModule frag_shader_module = createShaderModule(frag_shader);
+
+        VkPipelineShaderStageCreateInfo vert_ci = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr };
+        vert_ci.stage = VK_SHADER_STAGE_VERTEX_BIT;
+        vert_ci.module = vert_shader_module;
+        vert_ci.pName = "main";
+        vert_ci.pSpecializationInfo = nullptr;  // Specialization constants go here
+
+        VkPipelineShaderStageCreateInfo frag_ci = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr };
+        frag_ci.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        frag_ci.module = frag_shader_module;
+        frag_ci.pName = "main";
+        frag_ci.pSpecializationInfo = nullptr;  // Specialization constants go here
+
+        VkPipelineShaderStageCreateInfo pipe_stages[] = { vert_ci, frag_ci };
+
+        /////////////////////////////////////////////////////////////
+        // Vertex Input (none, for the moment - vertices are hard-coded in the shader)
+        /////////////////////////////////////////////////////////////
+        VkPipelineVertexInputStateCreateInfo vtx_in_ci = { VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO, nullptr };
+        vtx_in_ci.vertexBindingDescriptionCount = 0;
+        vtx_in_ci.pVertexBindingDescriptions = nullptr;
+        vtx_in_ci.vertexAttributeDescriptionCount = 0;
+        vtx_in_ci.pVertexAttributeDescriptions = nullptr;
+
+        /////////////////////////////////////////////////////////////
+        // Input Assembly
+        /////////////////////////////////////////////////////////////
+        VkPipelineInputAssemblyStateCreateInfo in_ass_ci = { VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, nullptr };
+        in_ass_ci.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        in_ass_ci.primitiveRestartEnable = VK_FALSE;
+
+        /////////////////////////////////////////////////////////////
+        // Viewport
+        /////////////////////////////////////////////////////////////
+        VkViewport viewport{};
+        viewport.x = 0.0f; 
+        viewport.y = 0.0f;
+        viewport.width = (float)swapchain_extent.width;
+        viewport.height = (float)swapchain_extent.height;
+        viewport.minDepth = 0.0f;
+        viewport.maxDepth = 1.0f;
+
+        VkRect2D scissor{};
+        scissor.offset = { 0, 0 };
+        scissor.extent = swapchain_extent;
+
+        VkPipelineViewportStateCreateInfo view_ci = { VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, nullptr };
+        view_ci.viewportCount = 1;
+        view_ci.pViewports = &viewport;
+        view_ci.scissorCount = 1;
+        view_ci.pScissors = &scissor;
+
+        /////////////////////////////////////////////////////////////
+        // Rasterizer
+        /////////////////////////////////////////////////////////////
+        VkPipelineRasterizationStateCreateInfo rast_ci = { VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO, nullptr };
+        rast_ci.depthClampEnable = VK_FALSE;        // kill outside depth range
+        rast_ci.rasterizerDiscardEnable = VK_FALSE; // pass geometry to rasterizer
+        rast_ci.polygonMode = VK_POLYGON_MODE_FILL;
+        rast_ci.lineWidth = 1.0f;
+        rast_ci.cullMode = VK_CULL_MODE_BACK_BIT;   // enable back face culling
+        rast_ci.frontFace = VK_FRONT_FACE_CLOCKWISE;
+        rast_ci.depthBiasEnable = VK_FALSE;
+        rast_ci.depthBiasConstantFactor = 0.0f; // disabled
+        rast_ci.depthBiasClamp = 0.0f;          // disabled
+        rast_ci.depthBiasSlopeFactor = 0.0f;    // disabled
+
+        /////////////////////////////////////////////////////////////
+        // Multisampling
+        /////////////////////////////////////////////////////////////
+        VkPipelineMultisampleStateCreateInfo multi_ci = { VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, nullptr };
+        multi_ci.sampleShadingEnable = VK_FALSE;
+        multi_ci.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;  
+        multi_ci.minSampleShading = 1.0f;           // disabled
+        multi_ci.pSampleMask = nullptr;             // disabled
+        multi_ci.alphaToCoverageEnable = VK_FALSE;  // disabled
+        multi_ci.alphaToOneEnable = VK_FALSE;       // disabled
+
+        /////////////////////////////////////////////////////////////
+        // Depth / Stencil (unused for now)
+        /////////////////////////////////////////////////////////////
+        VkPipelineDepthStencilStateCreateInfo ds_ci = { VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO, nullptr };
+        ds_ci.depthTestEnable = VK_FALSE;
+        ds_ci.depthWriteEnable = VK_FALSE;
+        ds_ci.depthBoundsTestEnable = VK_FALSE;
+        ds_ci.stencilTestEnable = VK_FALSE;
+
+        /////////////////////////////////////////////////////////////
+        // Color Blending (none)
+        /////////////////////////////////////////////////////////////
+        VkPipelineColorBlendAttachmentState blend_attach{};
+        blend_attach.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_B_BIT |
+                                      VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_A_BIT;
+        blend_attach.blendEnable            = VK_FALSE;
+        blend_attach.srcColorBlendFactor    = VK_BLEND_FACTOR_ONE;  // disabled
+        blend_attach.dstColorBlendFactor    = VK_BLEND_FACTOR_ZERO; // disabled
+        blend_attach.colorBlendOp           = VK_BLEND_OP_ADD;      // disabled
+        blend_attach.srcAlphaBlendFactor    = VK_BLEND_FACTOR_ONE;  // disabled
+        blend_attach.dstAlphaBlendFactor    = VK_BLEND_FACTOR_ZERO; // disabled
+        blend_attach.alphaBlendOp           = VK_BLEND_OP_ADD;      // disabled
+
+        VkPipelineColorBlendStateCreateInfo blend_ci = { VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, nullptr };
+        blend_ci.attachmentCount = 1;
+        blend_ci.pAttachments = &blend_attach;
+        blend_ci.logicOpEnable = VK_FALSE;
+        blend_ci.logicOp = VK_LOGIC_OP_COPY;    // disabled
+        // blend_ci.blendConstants[0] = ...
+
+        /////////////////////////////////////////////////////////////
+        // Dynamic State (example - unused)
+        /////////////////////////////////////////////////////////////
+        VkDynamicState dynamic_states[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_LINE_WIDTH };
+
+        VkPipelineDynamicStateCreateInfo dyn_ci = { VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, nullptr };
+        dyn_ci.dynamicStateCount = 2;
+        dyn_ci.pDynamicStates = dynamic_states;
+
+        /////////////////////////////////////////////////////////////
+        // Pipeline Layout
+        /////////////////////////////////////////////////////////////
+        VkPipelineLayoutCreateInfo layout_ci = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, nullptr };
+        layout_ci.setLayoutCount = 0;
+        layout_ci.pSetLayouts = nullptr;
+        layout_ci.pushConstantRangeCount = 0;
+        layout_ci.pPushConstantRanges = nullptr;
+
+        if (VK_SUCCESS != vkCreatePipelineLayout(device, &layout_ci, nullptr, &pipeline_layout))
+        {
+            throw std::runtime_error("Failed to create pipeline layout");
+        }
+
+        /////////////////////////////////////////////////////////////
+        // Create pipeline
+        /////////////////////////////////////////////////////////////
+        VkGraphicsPipelineCreateInfo pipe_ci = { VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, nullptr };
+        // TBD - more to do here
+
+        /////////////////////////////////////////////////////////////
+        // Cleanup
+        /////////////////////////////////////////////////////////////
+        vkDestroyShaderModule(device, vert_shader_module, nullptr);
+        vkDestroyShaderModule(device, frag_shader_module, nullptr);
+    }
+    
     void populateDebugMessengerCI(VkDebugUtilsMessengerCreateInfoEXT& ci)
     {
         ci = { VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT, nullptr };
@@ -630,6 +816,7 @@ private:
     VkExtent2D                  swapchain_extent;
     std::vector<VkImage>        swapchain_images;
     std::vector<VkImageView>    swapchain_image_views;
+    VkPipelineLayout            pipeline_layout     = VK_NULL_HANDLE;
 
     // conditional use of validation layers
     const std::vector<const char*> validation_layers = {"VK_LAYER_KHRONOS_validation"};
