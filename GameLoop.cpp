@@ -56,6 +56,7 @@ private:
         createImageViews();
         createRenderPass();
         createGraphicsPipeline();
+        createFrameBuffers();
     }
 
     void mainLoop() 
@@ -68,6 +69,7 @@ private:
 
     void cleanup() 
     {
+        for (auto& fb : swapchain_framebuffers) vkDestroyFramebuffer(device, fb, nullptr);
         vkDestroyPipeline(device, pipeline, nullptr);
         vkDestroyPipelineLayout(device, pipeline_layout, nullptr);
         vkDestroyRenderPass(device, render_pass, nullptr);
@@ -797,6 +799,29 @@ private:
         vkDestroyShaderModule(device, vert_shader_module, nullptr);
         vkDestroyShaderModule(device, frag_shader_module, nullptr);
     }
+
+    void createFrameBuffers()
+    {
+        swapchain_framebuffers.resize(swapchain_image_views.size());
+
+        for (size_t i = 0; i < swapchain_image_views.size(); i++)
+        {
+            VkImageView image_attachments[] = { swapchain_image_views[i] };
+
+            VkFramebufferCreateInfo fb_ci = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, nullptr };
+            fb_ci.renderPass = render_pass;
+            fb_ci.attachmentCount = 1;
+            fb_ci.pAttachments = image_attachments;
+            fb_ci.width = swapchain_extent.width;
+            fb_ci.height = swapchain_extent.height;
+            fb_ci.layers = 1;
+
+            if (VK_SUCCESS != vkCreateFramebuffer(device, &fb_ci, nullptr, &swapchain_framebuffers[i]))
+            {
+                throw std::runtime_error("Failed to create framebuffer");
+            }
+        }
+    }
     
     void populateDebugMessengerCI(VkDebugUtilsMessengerCreateInfoEXT& ci)
     {
@@ -871,6 +896,7 @@ private:
     VkExtent2D                  swapchain_extent;
     std::vector<VkImage>        swapchain_images;
     std::vector<VkImageView>    swapchain_image_views;
+    std::vector<VkFramebuffer>  swapchain_framebuffers;
     VkPipelineLayout            pipeline_layout     = VK_NULL_HANDLE;
     VkRenderPass                render_pass         = VK_NULL_HANDLE;
     VkPipeline                  pipeline            = VK_NULL_HANDLE;
