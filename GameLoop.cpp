@@ -1,4 +1,4 @@
-// Complete through https://vulkan-tutorial.com/en/Drawing_a_triangle/Graphics_pipeline_basics/Fixed_functions
+// Complete through https://vulkan-tutorial.com/en/Drawing_a_triangle/Graphics_pipeline_basics/Conclusion
 
 //#include <vulkan/vulkan.h>
 #define VK_USE_PLATFORM_WIN32_KHR
@@ -54,6 +54,7 @@ private:
         createLogicalDevice();
         createSwapChain();
         createImageViews();
+        createRenderPass();
         createGraphicsPipeline();
     }
 
@@ -67,7 +68,9 @@ private:
 
     void cleanup() 
     {
+        vkDestroyPipeline(device, pipeline, nullptr);
         vkDestroyPipelineLayout(device, pipeline_layout, nullptr);
+        vkDestroyRenderPass(device, render_pass, nullptr);
         for (auto& imageview : swapchain_image_views) vkDestroyImageView(device, imageview, nullptr);
         vkDestroySwapchainKHR(device, swapchain, nullptr);
         vkDestroyDevice(device, nullptr);
@@ -589,6 +592,39 @@ private:
         return shader;
     }
 
+    void createRenderPass()
+    {
+        VkAttachmentDescription2 attachment = { VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2, nullptr };
+        attachment.format = swapchain_format.format;
+        attachment.samples = VK_SAMPLE_COUNT_1_BIT;         // Match the swapchain image views
+        attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;    // Clear before rendering
+        attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;  // Save render contents for display
+        attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        attachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;   // We'll be presenting the result via swapchain
+
+        VkAttachmentReference2 attach_ref = { VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2, nullptr };
+        attach_ref.attachment = 0;  // Index of the attachment - 0 since we have only 1
+        attach_ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;   // layout to transition to when this subpass is active
+
+        VkSubpassDescription2 subpass = { VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2, nullptr };
+        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        subpass.colorAttachmentCount = 1;
+        subpass.pColorAttachments = &attach_ref;    // shader layout directive indexes into this array, e.g. layout(location=0)
+
+        VkRenderPassCreateInfo2 render_pass_ci = { VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2, nullptr };
+        render_pass_ci.attachmentCount = 1;
+        render_pass_ci.pAttachments = &attachment;
+        render_pass_ci.subpassCount = 1;
+        render_pass_ci.pSubpasses = &subpass;
+
+        if (VK_SUCCESS != vkCreateRenderPass2(device, &render_pass_ci, nullptr, &render_pass))
+        {
+            throw std::runtime_error("Failed to create render pass");
+        }
+    }
+
     void createGraphicsPipeline()
     {
         /////////////////////////////////////////////////////////////
@@ -734,7 +770,26 @@ private:
         // Create pipeline
         /////////////////////////////////////////////////////////////
         VkGraphicsPipelineCreateInfo pipe_ci = { VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, nullptr };
-        // TBD - more to do here
+        pipe_ci.stageCount = 2;
+        pipe_ci.pStages = pipe_stages;
+        pipe_ci.pVertexInputState = &vtx_in_ci;
+        pipe_ci.pInputAssemblyState = &in_ass_ci;
+        pipe_ci.pViewportState = &view_ci;
+        pipe_ci.pRasterizationState = &rast_ci;
+        pipe_ci.pMultisampleState = &multi_ci;
+        pipe_ci.pDepthStencilState = &ds_ci;
+        pipe_ci.pColorBlendState = &blend_ci;
+        pipe_ci.pDynamicState = &dyn_ci;
+        pipe_ci.layout = pipeline_layout;
+        pipe_ci.renderPass = render_pass;
+        pipe_ci.subpass = 0;    // Index of the render_pass subpass that uses this pipeline
+        pipe_ci.basePipelineHandle = VK_NULL_HANDLE;    // Not deriving from another pipeline
+        pipe_ci.basePipelineIndex = -1;                 // disabled
+
+        if (VK_SUCCESS != vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipe_ci, nullptr, &pipeline))
+        {
+            throw std::runtime_error("Failed to create graphics pipeline");
+        }
 
         /////////////////////////////////////////////////////////////
         // Cleanup
@@ -817,6 +872,8 @@ private:
     std::vector<VkImage>        swapchain_images;
     std::vector<VkImageView>    swapchain_image_views;
     VkPipelineLayout            pipeline_layout     = VK_NULL_HANDLE;
+    VkRenderPass                render_pass         = VK_NULL_HANDLE;
+    VkPipeline                  pipeline            = VK_NULL_HANDLE;
 
     // conditional use of validation layers
     const std::vector<const char*> validation_layers = {"VK_LAYER_KHRONOS_validation"};
