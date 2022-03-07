@@ -1,4 +1,4 @@
-// Complete through https://vulkan-tutorial.com/en/Drawing_a_triangle/Presentation/Swap_chain
+// Complete through https://vulkan-tutorial.com/en/Drawing_a_triangle/Presentation/Image_views
 
 //#include <vulkan/vulkan.h>
 #define VK_USE_PLATFORM_WIN32_KHR
@@ -52,6 +52,7 @@ private:
         choosePhysicalDevice();
         createLogicalDevice();
         createSwapChain();
+        createImageViews();
     }
 
     void mainLoop() 
@@ -64,6 +65,7 @@ private:
 
     void cleanup() 
     {
+        for (auto& imageview : swapchain_image_views) vkDestroyImageView(device, imageview, nullptr);
         vkDestroySwapchainKHR(device, swapchain, nullptr);
         vkDestroyDevice(device, nullptr);
         destroyDebugMessenger();
@@ -528,6 +530,33 @@ private:
         vkGetSwapchainImagesKHR(device, swapchain, &image_count, swapchain_images.data());
     }
 
+    void createImageViews()
+    {
+        swapchain_image_views.resize(swapchain_images.size());
+
+        for (size_t i = 0; i < swapchain_image_views.size(); i++)
+        {
+            VkImageViewCreateInfo ci = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, nullptr };
+            ci.image        = swapchain_images[i];
+            ci.viewType     = VK_IMAGE_VIEW_TYPE_2D;
+            ci.format       = swapchain_format.format;
+            ci.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+            ci.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+            ci.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+            ci.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+            ci.subresourceRange.aspectMask      = VK_IMAGE_ASPECT_COLOR_BIT;
+            ci.subresourceRange.baseMipLevel    = 0;
+            ci.subresourceRange.levelCount      = 1;
+            ci.subresourceRange.baseArrayLayer  = 0;
+            ci.subresourceRange.layerCount      = 1;
+
+            if (VK_SUCCESS != vkCreateImageView(device, &ci, nullptr, &swapchain_image_views[i]))
+            {
+                throw std::runtime_error("Failure while creating swapchain image views");
+            }
+        }
+    }
+
     void populateDebugMessengerCI(VkDebugUtilsMessengerCreateInfoEXT& ci)
     {
         ci = { VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT, nullptr };
@@ -600,6 +629,7 @@ private:
     VkSurfaceFormatKHR          swapchain_format;
     VkExtent2D                  swapchain_extent;
     std::vector<VkImage>        swapchain_images;
+    std::vector<VkImageView>    swapchain_image_views;
 
     // conditional use of validation layers
     const std::vector<const char*> validation_layers = {"VK_LAYER_KHRONOS_validation"};
