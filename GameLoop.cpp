@@ -1,4 +1,4 @@
-// Complete through https://vulkan-tutorial.com/en/Drawing_a_triangle/Drawing/Command_buffers
+// Complete through https://vulkan-tutorial.com/en/Drawing_a_triangle/Drawing/Rendering_and_presentation
 
 //#include <vulkan/vulkan.h>
 #define VK_USE_PLATFORM_WIN32_KHR
@@ -59,6 +59,7 @@ private:
         createFrameBuffers();
         createCommandPool();
         createCommandBuffer();
+        createSyncObjects();
     }
 
     void mainLoop() 
@@ -66,11 +67,17 @@ private:
         while (!glfwWindowShouldClose(window))
         {
             glfwPollEvents();
+            drawFrame();
         }
+
+        vkDeviceWaitIdle(device);   // wait for idle before cleaning up
     }
 
     void cleanup() 
     {
+        vkDestroyFence(device, fence_in_flight, nullptr);
+        vkDestroySemaphore(device, sem_image_available, nullptr);
+        vkDestroySemaphore(device, sem_render_complete, nullptr);
         vkFreeCommandBuffers(device, command_pool, 1, &command_buffer);
         vkDestroyCommandPool(device, command_pool, nullptr);
         for (auto& fb : swapchain_framebuffers) vkDestroyFramebuffer(device, fb, nullptr);
@@ -86,6 +93,43 @@ private:
 
         glfwDestroyWindow(window);
         glfwTerminate();
+    }
+
+    void drawFrame()
+    {
+        vkWaitForFences(device, 1, &fence_in_flight, VK_TRUE, UINT64_MAX);
+        vkResetFences(device, 1, &fence_in_flight);
+
+        uint32_t image_idx;
+        vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, sem_image_available, VK_NULL_HANDLE, &image_idx);
+
+        vkResetCommandBuffer(command_buffer, 0);
+        recordCommandBuffer(command_buffer, image_idx);
+
+        VkPipelineStageFlags wait_stages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+        VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO, nullptr };
+        si.waitSemaphoreCount = 1;
+        si.pWaitSemaphores = &sem_image_available;
+        si.pWaitDstStageMask = wait_stages;
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &command_buffer;
+        si.signalSemaphoreCount = 1;
+        si.pSignalSemaphores = &sem_render_complete;
+
+        if (VK_SUCCESS != vkQueueSubmit(gfx_queue, 1, &si, fence_in_flight))
+        {
+            throw std::runtime_error("Error submitting draw command buffer");
+        }
+
+        VkPresentInfoKHR present = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, nullptr };
+        present.waitSemaphoreCount = 1;
+        present.pWaitSemaphores = &sem_render_complete;
+        present.swapchainCount = 1;
+        present.pSwapchains = &swapchain;
+        present.pImageIndices = &image_idx;
+        present.pResults = nullptr;
+
+        vkQueuePresentKHR(present_queue, &present);
     }
 
     void createInstance() 
@@ -275,6 +319,9 @@ private:
         vkGetPhysicalDeviceProperties2(phys, &dev_props);
         vkGetPhysicalDeviceFeatures2(phys, &dev_features);
 
+        // for fun - force integrated GPU
+        //if (VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU != dev_props.properties.deviceType) return false;
+
         // Filter on min properties & features here, e.g.
         if (VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU == dev_props.properties.deviceType &&
             dev_features.features.vertexPipelineStoresAndAtomics)
@@ -296,7 +343,11 @@ private:
         // Check for presence of required queues
         QueueFamilies queue_fam_idx = findDeviceQueueFamilies(phys);
         
-        return (queue_fam_idx.isComplete() && swap_chain_ok);
+        bool found = (queue_fam_idx.isComplete() && swap_chain_ok);
+#ifdef VERBOSE_ON
+        if (found) std::cout << std::endl << "Physical GPU selected: " << dev_props.properties.deviceName << std::endl;
+#endif
+        return found;
     }
 
     QueueFamilies findDeviceQueueFamilies(VkPhysicalDevice phys)
@@ -499,6 +550,7 @@ private:
 
         uint32_t image_count = swap_details.caps.maxImageCount;
         if (0 == image_count) image_count = swap_details.caps.minImageCount + 1;    // max == 0 is flag for 'no limit'
+        image_count = min(image_count, 2 * swap_details.caps.minImageCount);        // discourage overly-large swap chains.
 
         // Build up the swapchain CI
         VkSwapchainCreateInfoKHR swap_ci = { VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, nullptr };
@@ -619,11 +671,21 @@ private:
         subpass.colorAttachmentCount = 1;
         subpass.pColorAttachments = &attach_ref;    // shader layout directive indexes into this array, e.g. layout(location=0)
 
+        VkSubpassDependency2 dep = { VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2, nullptr };
+        dep.srcSubpass = VK_SUBPASS_EXTERNAL;   // Before render pass
+        dep.dstSubpass = 0; // Index 0 is our sole subpass
+        dep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;   // swap chain finished with color attachment
+        dep.srcAccessMask = 0;
+        dep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;   // we will modify color attachment
+        dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
         VkRenderPassCreateInfo2 render_pass_ci = { VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2, nullptr };
         render_pass_ci.attachmentCount = 1;
         render_pass_ci.pAttachments = &attachment;
         render_pass_ci.subpassCount = 1;
         render_pass_ci.pSubpasses = &subpass;
+        render_pass_ci.dependencyCount = 1;
+        render_pass_ci.pDependencies = &dep;
 
         if (VK_SUCCESS != vkCreateRenderPass2(device, &render_pass_ci, nullptr, &render_pass))
         {
@@ -785,7 +847,7 @@ private:
         pipe_ci.pMultisampleState = &multi_ci;
         pipe_ci.pDepthStencilState = &ds_ci;
         pipe_ci.pColorBlendState = &blend_ci;
-        pipe_ci.pDynamicState = &dyn_ci;
+        pipe_ci.pDynamicState = nullptr;    // &dyn_ci;
         pipe_ci.layout = pipeline_layout;
         pipe_ci.renderPass = render_pass;
         pipe_ci.subpass = 0;    // Index of the render_pass subpass that uses this pipeline
@@ -890,6 +952,20 @@ private:
             throw std::runtime_error("Error ending command buffer recording");
         }
     }
+
+    void createSyncObjects()
+    {
+        VkSemaphoreCreateInfo sem_ci = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, nullptr };
+        VkFenceCreateInfo fence_ci = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, nullptr };
+        fence_ci.flags = VK_FENCE_CREATE_SIGNALED_BIT;  // Create as already signaled
+
+        if (VK_SUCCESS != vkCreateSemaphore(device, &sem_ci, nullptr, &sem_image_available) ||
+            VK_SUCCESS != vkCreateSemaphore(device, &sem_ci, nullptr, &sem_render_complete) ||
+            VK_SUCCESS != vkCreateFence(device, &fence_ci, nullptr, &fence_in_flight))
+        {
+            throw std::runtime_error("Error creating sync objects");
+        }
+    }
     
     void populateDebugMessengerCI(VkDebugUtilsMessengerCreateInfoEXT& ci)
     {
@@ -970,6 +1046,10 @@ private:
     VkPipeline                  pipeline            = VK_NULL_HANDLE;
     VkCommandPool               command_pool        = VK_NULL_HANDLE;
     VkCommandBuffer             command_buffer      = VK_NULL_HANDLE;
+
+    VkSemaphore                 sem_image_available;
+    VkSemaphore                 sem_render_complete;
+    VkFence                     fence_in_flight;
 
     // conditional use of validation layers
     const std::vector<const char*> validation_layers = {"VK_LAYER_KHRONOS_validation"};
