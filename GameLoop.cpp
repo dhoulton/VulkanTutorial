@@ -1,4 +1,4 @@
-// Complete through https://vulkan-tutorial.com/en/Drawing_a_triangle/Graphics_pipeline_basics/Conclusion
+// Complete through https://vulkan-tutorial.com/en/Drawing_a_triangle/Drawing/Command_buffers
 
 //#include <vulkan/vulkan.h>
 #define VK_USE_PLATFORM_WIN32_KHR
@@ -57,6 +57,8 @@ private:
         createRenderPass();
         createGraphicsPipeline();
         createFrameBuffers();
+        createCommandPool();
+        createCommandBuffer();
     }
 
     void mainLoop() 
@@ -69,6 +71,8 @@ private:
 
     void cleanup() 
     {
+        vkFreeCommandBuffers(device, command_pool, 1, &command_buffer);
+        vkDestroyCommandPool(device, command_pool, nullptr);
         for (auto& fb : swapchain_framebuffers) vkDestroyFramebuffer(device, fb, nullptr);
         vkDestroyPipeline(device, pipeline, nullptr);
         vkDestroyPipelineLayout(device, pipeline_layout, nullptr);
@@ -822,6 +826,70 @@ private:
             }
         }
     }
+
+    void createCommandPool()
+    {
+        QueueFamilies queue_indices = findDeviceQueueFamilies(physical_device);
+
+        VkCommandPoolCreateInfo pool_ci = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, nullptr };
+        pool_ci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;    // Reset buffers individually
+        pool_ci.queueFamilyIndex = queue_indices.graphics_family.value();
+
+        if (VK_SUCCESS != vkCreateCommandPool(device, &pool_ci, nullptr, &command_pool))
+        {
+            throw std::runtime_error("Failed to create command pool");
+        }
+    }
+
+    void createCommandBuffer()
+    {
+        VkCommandBufferAllocateInfo cb_ai = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, nullptr };
+        cb_ai.commandPool = command_pool;
+        cb_ai.commandBufferCount = 1;
+        cb_ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;  // Submit to queue directly
+
+        if (VK_SUCCESS != vkAllocateCommandBuffers(device, &cb_ai, &command_buffer))
+        {
+            throw std::runtime_error("Failed to create command buffer");
+        }
+    }
+
+    void recordCommandBuffer(VkCommandBuffer buf, uint32_t image_idx)
+    {
+        // Init buffer
+        VkCommandBufferBeginInfo begin_info = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr };
+        begin_info.flags = 0;
+        begin_info.pInheritanceInfo = nullptr;
+        if (VK_SUCCESS != vkBeginCommandBuffer(command_buffer, &begin_info))
+        {
+            throw std::runtime_error("Failure on begin command buffer recording");
+        }
+
+        // Init render pass
+        VkClearValue clear = { {{0.0f, 0.0f, 0.0f, 1.0f}} };
+        VkRenderPassBeginInfo rp = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, nullptr };
+        rp.renderPass = render_pass;
+        rp.framebuffer = swapchain_framebuffers[image_idx];
+        rp.renderArea.offset = { 0, 0 };
+        rp.renderArea.extent = swapchain_extent;
+        rp.clearValueCount = 1;
+        rp.pClearValues = &clear;
+        
+        vkCmdBeginRenderPass(command_buffer, &rp, VK_SUBPASS_CONTENTS_INLINE);
+
+        // Bind the pipeline
+        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+
+        // Submit a draw call
+        vkCmdDraw(command_buffer, 3, 1, 0, 0);
+
+        // End the render pass and finish recording
+        vkCmdEndRenderPass(command_buffer);
+        if (VK_SUCCESS != vkEndCommandBuffer(command_buffer))
+        {
+            throw std::runtime_error("Error ending command buffer recording");
+        }
+    }
     
     void populateDebugMessengerCI(VkDebugUtilsMessengerCreateInfoEXT& ci)
     {
@@ -900,6 +968,8 @@ private:
     VkPipelineLayout            pipeline_layout     = VK_NULL_HANDLE;
     VkRenderPass                render_pass         = VK_NULL_HANDLE;
     VkPipeline                  pipeline            = VK_NULL_HANDLE;
+    VkCommandPool               command_pool        = VK_NULL_HANDLE;
+    VkCommandBuffer             command_buffer      = VK_NULL_HANDLE;
 
     // conditional use of validation layers
     const std::vector<const char*> validation_layers = {"VK_LAYER_KHRONOS_validation"};
