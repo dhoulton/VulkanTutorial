@@ -1,4 +1,4 @@
-// Complete through https://vulkan-tutorial.com/en/Drawing_a_triangle/Drawing/Rendering_and_presentation
+// Complete through https://vulkan-tutorial.com/en/Drawing_a_triangle/Swap_chain_recreation
 
 //#include <vulkan/vulkan.h>
 #define VK_USE_PLATFORM_WIN32_KHR
@@ -40,9 +40,18 @@ private:
 
         glfwInit();
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-        glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+        glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
         window = glfwCreateWindow(window_width, window_height, "Vulkan", nullptr, nullptr);
+
+        glfwSetWindowUserPointer(window, this);
+        glfwSetFramebufferSizeCallback(window, onFramebufferResize);
+    }
+
+    static void onFramebufferResize(GLFWwindow* window, int width, int height)
+    {
+        auto app = reinterpret_cast<HelloTriangleApplication*>(glfwGetWindowUserPointer(window));
+        app->frame_buffer_resized = true;
     }
 
     void initVulkan() 
@@ -80,12 +89,9 @@ private:
         vkDestroySemaphore(device, sem_render_complete, nullptr);
         vkFreeCommandBuffers(device, command_pool, 1, &command_buffer);
         vkDestroyCommandPool(device, command_pool, nullptr);
-        for (auto& fb : swapchain_framebuffers) vkDestroyFramebuffer(device, fb, nullptr);
-        vkDestroyPipeline(device, pipeline, nullptr);
-        vkDestroyPipelineLayout(device, pipeline_layout, nullptr);
-        vkDestroyRenderPass(device, render_pass, nullptr);
-        for (auto& imageview : swapchain_image_views) vkDestroyImageView(device, imageview, nullptr);
-        vkDestroySwapchainKHR(device, swapchain, nullptr);
+
+        cleanupSwapchain();
+
         vkDestroyDevice(device, nullptr);
         destroyDebugMessenger();
         vkDestroySurfaceKHR(instance, surface, nullptr);
@@ -98,10 +104,21 @@ private:
     void drawFrame()
     {
         vkWaitForFences(device, 1, &fence_in_flight, VK_TRUE, UINT64_MAX);
-        vkResetFences(device, 1, &fence_in_flight);
 
         uint32_t image_idx;
-        vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, sem_image_available, VK_NULL_HANDLE, &image_idx);
+        VkResult res = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, sem_image_available, VK_NULL_HANDLE, &image_idx);
+        if (VK_ERROR_OUT_OF_DATE_KHR == res)
+        {
+            recreateSwapChain();    // Something has changed that makes present impossible
+            return;
+        }
+        if (VK_SUCCESS != res && VK_SUBOPTIMAL_KHR != res)  // both are 'successful-ish' results
+        {
+            throw std::runtime_error("Error acquiring next swap chain image");
+        }
+
+        // By here we've assured we'll be submitting work, so we should reset the fence
+        vkResetFences(device, 1, &fence_in_flight);
 
         vkResetCommandBuffer(command_buffer, 0);
         recordCommandBuffer(command_buffer, image_idx);
@@ -129,7 +146,16 @@ private:
         present.pImageIndices = &image_idx;
         present.pResults = nullptr;
 
-        vkQueuePresentKHR(present_queue, &present);
+        res = vkQueuePresentKHR(present_queue, &present);
+        if (VK_ERROR_OUT_OF_DATE_KHR == res || VK_SUBOPTIMAL_KHR == res || frame_buffer_resized)
+        {
+            frame_buffer_resized = false;
+            recreateSwapChain();    // Something has changed that we should adjust for
+        }
+        else if (VK_SUCCESS != res)
+        {
+            throw std::runtime_error("Error on image present");
+        }
     }
 
     void createInstance() 
@@ -594,6 +620,43 @@ private:
         vkGetSwapchainImagesKHR(device, swapchain, &image_count, swapchain_images.data());
     }
 
+    void recreateSwapChain() // Works on Intel, validation error "vkCreateSwapchainKHR: internal drawable creation failed" on nvidia
+    {
+        int w = 0, h = 0;
+        glfwGetFramebufferSize(window, &w, &h);
+        while (0 == w || 0 == h)
+        {
+            glfwWaitEvents();   // We've been minimized, so just wait for an event that says otherwise
+            glfwGetFramebufferSize(window, &w, &h);
+        }
+
+        vkDeviceWaitIdle(device);   // Big hammer synchronization
+
+        cleanupSwapchain();         // Destroy all existing swapchain resources
+
+        createSwapChain();
+        createImageViews();
+        createRenderPass();
+        createGraphicsPipeline();   // Can avoid re-creation by making viewport & scissor dynamic
+        createFrameBuffers();
+    }
+
+    void cleanupSwapchain()
+    {
+        for (auto& fb : swapchain_framebuffers) vkDestroyFramebuffer(device, fb, nullptr);
+        swapchain_framebuffers.clear();
+        vkDestroyPipeline(device, pipeline, nullptr); 
+        pipeline = VK_NULL_HANDLE;
+        vkDestroyPipelineLayout(device, pipeline_layout, nullptr);
+        pipeline_layout = VK_NULL_HANDLE;
+        vkDestroyRenderPass(device, render_pass, nullptr);
+        render_pass = VK_NULL_HANDLE;
+        for (auto& imageview : swapchain_image_views) vkDestroyImageView(device, imageview, nullptr);
+        swapchain_image_views.clear();
+        vkDestroySwapchainKHR(device, swapchain, nullptr);
+        swapchain = VK_NULL_HANDLE;
+    }
+
     void createImageViews()
     {
         swapchain_image_views.resize(swapchain_images.size());
@@ -1027,6 +1090,8 @@ private:
     const uint32_t  window_width = 1200;
     const uint32_t  window_height = 900;
     GLFWwindow*     window;
+
+    bool            frame_buffer_resized = false;
 
     VkInstance                  instance            = VK_NULL_HANDLE;
     VkSurfaceKHR                surface             = VK_NULL_HANDLE;
