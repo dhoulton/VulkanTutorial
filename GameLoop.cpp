@@ -1,4 +1,4 @@
-// Complete through https://vulkan-tutorial.com/en/Drawing_a_triangle/Swap_chain_recreation
+// Complete through https://vulkan-tutorial.com/en/Vertex_buffers/Vertex_input_description
 
 //#include <vulkan/vulkan.h>
 #define VK_USE_PLATFORM_WIN32_KHR
@@ -7,11 +7,14 @@
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
 
+#include <glm/glm.hpp>
+
 #include <iostream>
 #include <stdexcept>
 #include <cstdlib>
 
 #include <algorithm>
+#include <array>
 #include <fstream>
 #include <vector>
 #include <set>
@@ -21,6 +24,41 @@
 #define VERBOSE_ON
 #define VALIDATION_ON
 #endif
+
+struct Vertex
+{
+    glm::vec2 pos;
+    glm::vec3 color;
+
+    static VkVertexInputBindingDescription getBindingDesc()
+    {
+        VkVertexInputBindingDescription bind_desc{};
+        bind_desc.binding = 0;
+        bind_desc.stride = sizeof(Vertex);
+        bind_desc.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+        return bind_desc;
+    }
+
+    static std::array<VkVertexInputAttributeDescription, 2> getAttribDesc()
+    {
+        std::array<VkVertexInputAttributeDescription, 2> attrib_desc{};
+        attrib_desc[0].binding = 0;     // Matches binding index 0 above
+        attrib_desc[0].location = 0;    // Input location in shader (position attribute)
+        attrib_desc[0].format = VK_FORMAT_R32G32_SFLOAT;    // 2 32-bit floats    
+        attrib_desc[0].offset = offsetof(Vertex, pos);      // 1st element
+
+        attrib_desc[1].binding = 0;     // Matches binding index 0 above
+        attrib_desc[1].location = 1;    // Input location in shader (color attribute
+        attrib_desc[1].format = VK_FORMAT_R32G32B32_SFLOAT; // 3 32-bit floats    
+        attrib_desc[1].offset = offsetof(Vertex, color);    // 2nd element
+
+        return attrib_desc;
+    }
+};
+
+const std::vector<Vertex> vertices = { {{ 0.0, -0.5}, {1.0, 0.0, 0.0}},
+                                       {{ 0.5,  0.5}, {0.0, 1.0, 0.0}},
+                                       {{-0.5,  0.5}, {0.0, 0.0, 1.0}} };
 
 class HelloTriangleApplication
 {
@@ -67,6 +105,7 @@ private:
         createGraphicsPipeline();
         createFrameBuffers();
         createCommandPool();
+        createVertexBuffers();
         createCommandBuffer();
         createSyncObjects();
     }
@@ -92,6 +131,8 @@ private:
 
         cleanupSwapchain();
 
+        vkDestroyBuffer(device, vertex_buffer, nullptr);
+        vkFreeMemory(device, vertex_buffer_mem, nullptr);
         vkDestroyDevice(device, nullptr);
         destroyDebugMessenger();
         vkDestroySurfaceKHR(instance, surface, nullptr);
@@ -576,7 +617,7 @@ private:
 
         uint32_t image_count = swap_details.caps.maxImageCount;
         if (0 == image_count) image_count = swap_details.caps.minImageCount + 1;    // max == 0 is flag for 'no limit'
-        image_count = min(image_count, 2 * swap_details.caps.minImageCount);        // discourage overly-large swap chains.
+        image_count = std::min(image_count, 2 * swap_details.caps.minImageCount);   // discourage overly-large swap chains.
 
         // Build up the swapchain CI
         VkSwapchainCreateInfoKHR swap_ci = { VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, nullptr };
@@ -784,11 +825,14 @@ private:
         /////////////////////////////////////////////////////////////
         // Vertex Input (none, for the moment - vertices are hard-coded in the shader)
         /////////////////////////////////////////////////////////////
+        auto bind_desc = Vertex::getBindingDesc();
+        auto attrib_desc = Vertex::getAttribDesc();
+
         VkPipelineVertexInputStateCreateInfo vtx_in_ci = { VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO, nullptr };
-        vtx_in_ci.vertexBindingDescriptionCount = 0;
-        vtx_in_ci.pVertexBindingDescriptions = nullptr;
-        vtx_in_ci.vertexAttributeDescriptionCount = 0;
-        vtx_in_ci.pVertexAttributeDescriptions = nullptr;
+        vtx_in_ci.vertexBindingDescriptionCount = 1;
+        vtx_in_ci.pVertexBindingDescriptions = &bind_desc;
+        vtx_in_ci.vertexAttributeDescriptionCount = static_cast<uint32_t>(attrib_desc.size());
+        vtx_in_ci.pVertexAttributeDescriptions = attrib_desc.data();
 
         /////////////////////////////////////////////////////////////
         // Input Assembly
@@ -1005,8 +1049,13 @@ private:
         // Bind the pipeline
         vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
+        // Bind the vertex buffer
+        VkBuffer vtx_buffers[] = { vertex_buffer };
+        VkDeviceSize vb_offsets[] = { 0 };
+        vkCmdBindVertexBuffers(command_buffer, 0, 1, vtx_buffers, vb_offsets);
+
         // Submit a draw call
-        vkCmdDraw(command_buffer, 3, 1, 0, 0);
+        vkCmdDraw(command_buffer, static_cast<uint32_t>(vertices.size()), 1, 0, 0);
 
         // End the render pass and finish recording
         vkCmdEndRenderPass(command_buffer);
@@ -1030,6 +1079,68 @@ private:
         }
     }
     
+    uint32_t findMemoryTypeIdx(uint32_t type, VkMemoryPropertyFlags props)
+    {
+        VkPhysicalDeviceMemoryProperties2 mem_props = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2, nullptr };
+        vkGetPhysicalDeviceMemoryProperties2(physical_device, &mem_props);
+
+        // Look for type and exact properties match
+        for (uint32_t i = 0; i < mem_props.memoryProperties.memoryTypeCount; i++)
+        {
+            if ((type & (1 << i)) && (props == (mem_props.memoryProperties.memoryTypes[i].propertyFlags & props))) 
+                return i;
+        }
+
+        // Look for type and any matching property bits
+        for (uint32_t i = 0; i < mem_props.memoryProperties.memoryTypeCount; i++)
+        {
+            if ((type & (1 << i)) && (mem_props.memoryProperties.memoryTypes[i].propertyFlags & props))
+                return i;
+        }
+
+        throw std::runtime_error("Failed to find compatible physical memory type/properties");
+    }
+
+    void createVertexBuffers()
+    {
+        // Create buffer
+        VkBufferCreateInfo vb_ci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, nullptr };
+        vb_ci.size = sizeof(vertices[0]) * vertices.size(); // vb size in bytes
+        vb_ci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        vb_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;      // exclusively used by graphics pipe
+
+        if (VK_SUCCESS != vkCreateBuffer(device, &vb_ci, nullptr, &vertex_buffer))
+        {
+            throw std::runtime_error("Error creating vertex buffer");
+        }
+
+        // Allocate memory
+        VkMemoryRequirements2 mem_req = { VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2, nullptr };
+        VkBufferMemoryRequirementsInfo2 buf_mem_req = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_REQUIREMENTS_INFO_2, nullptr };
+        buf_mem_req.buffer = vertex_buffer;
+        vkGetBufferMemoryRequirements2(device, &buf_mem_req, &mem_req);
+
+        VkMemoryAllocateInfo alloc_info = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, nullptr };
+        alloc_info.allocationSize = mem_req.memoryRequirements.size;
+        alloc_info.memoryTypeIndex = findMemoryTypeIdx(mem_req.memoryRequirements.memoryTypeBits,
+                                                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (VK_SUCCESS != vkAllocateMemory(device, &alloc_info, nullptr, &vertex_buffer_mem))
+        {
+            throw std::runtime_error("Error allocating memory for vertex buffer");
+        }
+
+        // Bind memory to buffer
+        vkBindBufferMemory(device, vertex_buffer, vertex_buffer_mem, 0);
+
+        // Map & fill vertex buffer
+        void* data;
+        vkMapMemory(device, vertex_buffer_mem, 0, VK_WHOLE_SIZE, 0, &data);
+        memcpy(data, vertices.data(), (size_t)vb_ci.size);
+        // If not using coherent memory (VK_MEMORY_PROPERTY_HOST_COHERENT_BIT), call vkFlushMappedMemoryRanges() here
+        vkUnmapMemory(device, vertex_buffer_mem);
+    }
+
     void populateDebugMessengerCI(VkDebugUtilsMessengerCreateInfoEXT& ci)
     {
         ci = { VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT, nullptr };
@@ -1111,6 +1222,8 @@ private:
     VkPipeline                  pipeline            = VK_NULL_HANDLE;
     VkCommandPool               command_pool        = VK_NULL_HANDLE;
     VkCommandBuffer             command_buffer      = VK_NULL_HANDLE;
+    VkBuffer                    vertex_buffer       = VK_NULL_HANDLE;
+    VkDeviceMemory              vertex_buffer_mem   = VK_NULL_HANDLE;
 
     VkSemaphore                 sem_image_available;
     VkSemaphore                 sem_render_complete;
