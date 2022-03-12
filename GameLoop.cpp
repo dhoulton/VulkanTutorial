@@ -1,4 +1,4 @@
-// Complete through https://vulkan-tutorial.com/en/Vertex_buffers/Vertex_input_description
+// Complete through https://vulkan-tutorial.com/en/Vertex_buffers/Staging_buffer
 
 //#include <vulkan/vulkan.h>
 #define VK_USE_PLATFORM_WIN32_KHR
@@ -1101,44 +1101,117 @@ private:
         throw std::runtime_error("Failed to find compatible physical memory type/properties");
     }
 
-    void createVertexBuffers()
+    void createBuffer(VkDeviceSize size, 
+                      VkBufferUsageFlags usage, 
+                      VkMemoryPropertyFlags props, 
+                      VkBuffer& buffer, 
+                      VkDeviceMemory &buffer_mem)
     {
         // Create buffer
         VkBufferCreateInfo vb_ci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, nullptr };
-        vb_ci.size = sizeof(vertices[0]) * vertices.size(); // vb size in bytes
-        vb_ci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-        vb_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;      // exclusively used by graphics pipe
+        vb_ci.size = size;
+        vb_ci.usage = usage;
+        vb_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE; // exclusively used by graphics pipe
 
-        if (VK_SUCCESS != vkCreateBuffer(device, &vb_ci, nullptr, &vertex_buffer))
+        if (VK_SUCCESS != vkCreateBuffer(device, &vb_ci, nullptr, &buffer))
         {
-            throw std::runtime_error("Error creating vertex buffer");
+            throw std::runtime_error("Error creating buffer");
         }
 
-        // Allocate memory
+        // Allocate memory (note that one-off allocations are bad for perf, use a memory pool w/ offsets)
+        // Consider https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator
         VkMemoryRequirements2 mem_req = { VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2, nullptr };
         VkBufferMemoryRequirementsInfo2 buf_mem_req = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_REQUIREMENTS_INFO_2, nullptr };
-        buf_mem_req.buffer = vertex_buffer;
+        buf_mem_req.buffer = buffer;
         vkGetBufferMemoryRequirements2(device, &buf_mem_req, &mem_req);
 
         VkMemoryAllocateInfo alloc_info = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, nullptr };
         alloc_info.allocationSize = mem_req.memoryRequirements.size;
-        alloc_info.memoryTypeIndex = findMemoryTypeIdx(mem_req.memoryRequirements.memoryTypeBits,
-                                                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        if (VK_SUCCESS != vkAllocateMemory(device, &alloc_info, nullptr, &vertex_buffer_mem))
+        alloc_info.memoryTypeIndex = findMemoryTypeIdx(mem_req.memoryRequirements.memoryTypeBits, props);
+        if (VK_SUCCESS != vkAllocateMemory(device, &alloc_info, nullptr, &buffer_mem))
         {
-            throw std::runtime_error("Error allocating memory for vertex buffer");
+            throw std::runtime_error("Error allocating memory for buffer");
         }
 
         // Bind memory to buffer
-        vkBindBufferMemory(device, vertex_buffer, vertex_buffer_mem, 0);
+        vkBindBufferMemory(device, buffer, buffer_mem, 0);
+    }
 
-        // Map & fill vertex buffer
+    void copyBuffer(VkBuffer src, VkBuffer dst, VkDeviceSize size)
+    {
+        // Alloc a new command buffer
+        VkCommandBufferAllocateInfo alloc_info = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, nullptr };
+        alloc_info.commandPool = command_pool;
+        alloc_info.commandBufferCount = 1;
+        alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+
+        VkCommandBuffer cbuf;
+        vkAllocateCommandBuffers(device, &alloc_info, &cbuf);
+
+        // Begin
+        VkCommandBufferBeginInfo begin_info = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr };
+        begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        vkBeginCommandBuffer(cbuf, &begin_info);
+
+        // Copy staging to vtx
+        VkBufferCopy2 copy_rgn = { VK_STRUCTURE_TYPE_BUFFER_COPY_2, nullptr };
+        copy_rgn.srcOffset = 0;
+        copy_rgn.dstOffset = 0;
+        copy_rgn.size = size;
+
+        VkCopyBufferInfo2 copy_info = { VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2, nullptr };
+        copy_info.srcBuffer = src;
+        copy_info.dstBuffer = dst;
+        copy_info.regionCount = 1;
+        copy_info.pRegions = &copy_rgn;
+
+        vkCmdCopyBuffer2(cbuf, &copy_info);
+
+        // Finish
+        vkEndCommandBuffer(cbuf);
+
+        // Submit. Since this is a one-shot, skip fence and just do a wait-idle for sync
+        VkSubmitInfo sinfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO, nullptr };
+        sinfo.commandBufferCount = 1;
+        sinfo.pCommandBuffers = &cbuf;
+
+        vkQueueSubmit(gfx_queue, 1, &sinfo, VK_NULL_HANDLE);
+        vkQueueWaitIdle(gfx_queue);
+
+        // Clean up
+        vkFreeCommandBuffers(device, command_pool, 1, &cbuf);
+    }
+
+    void createVertexBuffers()
+    {
+        VkDeviceSize vb_size = sizeof(vertices[0]) * vertices.size(); // vb size in bytes
+
+        VkBuffer staging = VK_NULL_HANDLE;
+        VkDeviceMemory staging_mem = VK_NULL_HANDLE;
+        createBuffer(vb_size,
+                     VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                     staging, 
+                     staging_mem);
+
+        // Map & fill staging buffer
         void* data;
-        vkMapMemory(device, vertex_buffer_mem, 0, VK_WHOLE_SIZE, 0, &data);
-        memcpy(data, vertices.data(), (size_t)vb_ci.size);
-        // If not using coherent memory (VK_MEMORY_PROPERTY_HOST_COHERENT_BIT), call vkFlushMappedMemoryRanges() here
-        vkUnmapMemory(device, vertex_buffer_mem);
+        vkMapMemory(device, staging_mem, 0, VK_WHOLE_SIZE, 0, &data);
+        memcpy(data, vertices.data(), (size_t) vb_size);
+        vkUnmapMemory(device, staging_mem);
+
+        // Create the on-device vertex buffer & copy data from staging
+        createBuffer(vb_size,
+            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            vertex_buffer,
+            vertex_buffer_mem);
+
+        copyBuffer(staging, vertex_buffer, vb_size);
+
+        // Clean up
+        vkDestroyBuffer(device, staging, nullptr);
+        vkFreeMemory(device, staging_mem, nullptr);
     }
 
     void populateDebugMessengerCI(VkDebugUtilsMessengerCreateInfoEXT& ci)
