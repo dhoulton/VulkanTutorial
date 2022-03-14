@@ -1,4 +1,4 @@
-// Complete through https://vulkan-tutorial.com/en/Vertex_buffers/Index_buffer
+// Complete through https://vulkan-tutorial.com/en/Uniform_buffers/Descriptor_layout_and_buffer
 
 //#include <vulkan/vulkan.h>
 #define VK_USE_PLATFORM_WIN32_KHR
@@ -7,7 +7,9 @@
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
 
+#define GLM_FORCE_RADIANS
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 #include <iostream>
 #include <stdexcept>
@@ -15,6 +17,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <fstream>
 #include <vector>
 #include <set>
@@ -24,6 +27,8 @@
 #define VERBOSE_ON
 #define VALIDATION_ON
 #endif
+
+const uint32_t MAX_FRAMES_IN_FLIGHT = 4;
 
 struct Vertex
 {
@@ -54,6 +59,16 @@ struct Vertex
 
         return attrib_desc;
     }
+};
+
+struct mvp_ubo
+{
+    // Default C++ alignments don't match Vulkan spec: https://www.khronos.org/registry/vulkan/specs/1.3-extensions/html/chap15.html#interfaces-resources-layout
+    // i.e. without explicit alignments, the foo vec2 will break this struct
+    glm::vec2 foo;
+    alignas(16) glm::mat4 model;
+    alignas(16) glm::mat4 view;
+    alignas(16) glm::mat4 projection;
 };
 
 const std::vector<Vertex> vertices = { {{-0.5, -0.5}, {1.0, 0.0, 0.0}},
@@ -105,8 +120,12 @@ private:
         createSwapChain();
         createImageViews();
         createRenderPass();
+        createDescriptorSetLayout();
         createGraphicsPipeline();
         createFrameBuffers();
+        createUniformBuffers();
+        createDescriptorPool();
+        createDescriptorSets();
         createCommandPool();
         createVertexBuffers();
         createIndexBuffers();
@@ -135,6 +154,13 @@ private:
 
         cleanupSwapchain();
 
+        vkDestroyDescriptorPool(device, descriptor_pool, nullptr);
+        vkDestroyDescriptorSetLayout(device, ubo_desc_layout, nullptr);
+        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+        {
+            vkDestroyBuffer(device, uniform_buffer[i], nullptr);
+            vkFreeMemory(device, uniform_buffer_memory[i], nullptr);
+        }
         vkDestroyBuffer(device, vertex_buffer, nullptr);
         vkDestroyBuffer(device, index_buffer, nullptr);
         vkFreeMemory(device, vertex_buffer_mem, nullptr);
@@ -166,6 +192,8 @@ private:
 
         // By here we've assured we'll be submitting work, so we should reset the fence
         vkResetFences(device, 1, &fence_in_flight);
+
+        updateUniformBuffer(image_idx);
 
         vkResetCommandBuffer(command_buffer, 0);
         recordCommandBuffer(command_buffer, image_idx);
@@ -623,7 +651,7 @@ private:
 
         uint32_t image_count = swap_details.caps.maxImageCount;
         if (0 == image_count) image_count = swap_details.caps.minImageCount + 1;    // max == 0 is flag for 'no limit'
-        image_count = std::min(image_count, 2 * swap_details.caps.minImageCount);   // discourage overly-large swap chains.
+        image_count = std::min(image_count, MAX_FRAMES_IN_FLIGHT);                  // discourage overly-large swap chains.
 
         // Build up the swapchain CI
         VkSwapchainCreateInfoKHR swap_ci = { VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, nullptr };
@@ -803,6 +831,26 @@ private:
         }
     }
 
+    void createDescriptorSetLayout()
+    {
+        VkDescriptorSetLayoutBinding ubo_layout{};
+        ubo_layout.binding = 0;    // Matches vertex shader binding layout
+        ubo_layout.stageFlags = VK_SHADER_STAGE_VERTEX_BIT; // Consumed only in vtx shader
+        ubo_layout.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        ubo_layout.descriptorCount = 1;
+        ubo_layout.pImmutableSamplers = nullptr;
+
+        VkDescriptorSetLayoutCreateInfo ds_ci = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, nullptr };
+        ds_ci.bindingCount = 1;
+        ds_ci.pBindings = &ubo_layout;
+
+        if (VK_SUCCESS != vkCreateDescriptorSetLayout(device, &ds_ci, nullptr, &ubo_desc_layout))
+        {
+            throw std::runtime_error("Failed to create ubo descriptor set layout");
+        }
+
+    }
+
     void createGraphicsPipeline()
     {
         /////////////////////////////////////////////////////////////
@@ -937,8 +985,8 @@ private:
         // Pipeline Layout
         /////////////////////////////////////////////////////////////
         VkPipelineLayoutCreateInfo layout_ci = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, nullptr };
-        layout_ci.setLayoutCount = 0;
-        layout_ci.pSetLayouts = nullptr;
+        layout_ci.setLayoutCount = 1;
+        layout_ci.pSetLayouts = &ubo_desc_layout;
         layout_ci.pushConstantRangeCount = 0;
         layout_ci.pPushConstantRanges = nullptr;
 
@@ -1062,6 +1110,10 @@ private:
 
         // Bind the index buffer
         vkCmdBindIndexBuffer(command_buffer, index_buffer, 0, VK_INDEX_TYPE_UINT16);
+
+        // Bind the ubo descriptor
+        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 
+                                0, 1, &descriptor_sets[image_idx], 0, nullptr);
 
         // Submit a draw call
         vkCmdDrawIndexed(command_buffer, static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
@@ -1255,6 +1307,99 @@ private:
         vkFreeMemory(device, staging_mem, nullptr);
     }
 
+    void createDescriptorPool()
+    {
+        VkDescriptorPoolSize pool_size{};
+        pool_size.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        pool_size.descriptorCount = MAX_FRAMES_IN_FLIGHT;
+
+        VkDescriptorPoolCreateInfo dp_ci = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, nullptr };
+        dp_ci.poolSizeCount = 1;
+        dp_ci.pPoolSizes = &pool_size;
+        dp_ci.maxSets = MAX_FRAMES_IN_FLIGHT;
+
+        if (VK_SUCCESS != vkCreateDescriptorPool(device, &dp_ci, nullptr, &descriptor_pool))
+        {
+            throw std::runtime_error("Error creating descriptor pool");
+        }
+    }
+
+    void createDescriptorSets()
+    {
+        std::vector<VkDescriptorSetLayout> ds_layouts(MAX_FRAMES_IN_FLIGHT, ubo_desc_layout);
+        VkDescriptorSetAllocateInfo ds_ai = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, nullptr };
+        ds_ai.descriptorPool = descriptor_pool;
+        ds_ai.descriptorSetCount = MAX_FRAMES_IN_FLIGHT;
+        ds_ai.pSetLayouts = ds_layouts.data();
+
+        descriptor_sets.resize(MAX_FRAMES_IN_FLIGHT);
+        if (VK_SUCCESS != vkAllocateDescriptorSets(device, &ds_ai, descriptor_sets.data()))
+        {
+            throw std::runtime_error("Error allocating descriptor sets");
+        }
+        // cleaned up implicitly when pool is destroyed
+
+        // Populate the descriptor sets with the uniform buffers
+        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+        {
+            VkDescriptorBufferInfo bi{};
+            bi.buffer = uniform_buffer[i];
+            bi.offset = 0;
+            bi.range = sizeof(mvp_ubo);
+            
+            VkWriteDescriptorSet write_info = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr };
+            write_info.dstSet = descriptor_sets[i];
+            write_info.dstBinding = 0;
+            write_info.dstArrayElement = 0;
+            write_info.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            write_info.descriptorCount = 1;
+            write_info.pBufferInfo = &bi;
+            write_info.pImageInfo = nullptr;        // 
+            write_info.pTexelBufferView = nullptr;  // 
+
+            vkUpdateDescriptorSets(device, 1, &write_info, 0, nullptr);
+        }
+    }
+
+    void createUniformBuffers()
+    {
+        VkDeviceSize ubo_size = sizeof(mvp_ubo);
+        uniform_buffer.resize(MAX_FRAMES_IN_FLIGHT);
+        uniform_buffer_memory.resize(MAX_FRAMES_IN_FLIGHT);
+
+        // UBOs are modified frequently, so little to gain from using a staging buffer. Just make them host accessible.
+        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+        {
+            createBuffer(ubo_size, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                uniform_buffer[i], uniform_buffer_memory[i]);
+        }
+    }
+
+    void updateUniformBuffer(uint32_t idx)
+    {
+        static auto start_time = std::chrono::high_resolution_clock::now();
+
+        auto cur_time = std::chrono::high_resolution_clock::now();
+        auto elapsed_time = std::chrono::duration<float, std::chrono::seconds::period>(cur_time - start_time).count();
+
+        mvp_ubo ubo{};
+        // rotate around Z at 90 deg/sec
+        ubo.model = glm::rotate(glm::mat4(1.0f), elapsed_time * glm::radians(90.0f), glm::vec3(0.f, 0.f, 1.f));
+
+        // look at origin from 2,2,2
+        ubo.view = glm::lookAt(glm::vec3(2.f, 2.f, 2.f), glm::vec3(0.f, 0.f, 0.f), glm::vec3(0.f, 0.f, -1.f));
+
+        // 45-deg FOV, z range 0.1 .. 10.0
+        ubo.projection = glm::perspectiveRH(glm::radians(45.f), swapchain_extent.width / (float)swapchain_extent.height, 0.1f, 10.f);
+
+        // copy (optimization would be to use push constants instead of map/copy/unmap)
+        void* data;
+        vkMapMemory(device, uniform_buffer_memory[idx], 0, sizeof(ubo), 0, &data);
+        memcpy(data, &ubo, sizeof(ubo));
+        vkUnmapMemory(device, uniform_buffer_memory[idx]);
+    }
+
     void populateDebugMessengerCI(VkDebugUtilsMessengerCreateInfoEXT& ci)
     {
         ci = { VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT, nullptr };
@@ -1331,6 +1476,9 @@ private:
     std::vector<VkImage>        swapchain_images;
     std::vector<VkImageView>    swapchain_image_views;
     std::vector<VkFramebuffer>  swapchain_framebuffers;
+    VkDescriptorSetLayout       ubo_desc_layout     = VK_NULL_HANDLE;
+    VkDescriptorPool            descriptor_pool     = VK_NULL_HANDLE;
+    std::vector<VkDescriptorSet> descriptor_sets;
     VkPipelineLayout            pipeline_layout     = VK_NULL_HANDLE;
     VkRenderPass                render_pass         = VK_NULL_HANDLE;
     VkPipeline                  pipeline            = VK_NULL_HANDLE;
@@ -1340,6 +1488,8 @@ private:
     VkDeviceMemory              vertex_buffer_mem   = VK_NULL_HANDLE;
     VkBuffer                    index_buffer        = VK_NULL_HANDLE;
     VkDeviceMemory              index_buffer_mem    = VK_NULL_HANDLE;
+    std::vector<VkBuffer>       uniform_buffer;
+    std::vector<VkDeviceMemory> uniform_buffer_memory;
 
     VkSemaphore                 sem_image_available;
     VkSemaphore                 sem_render_complete;
