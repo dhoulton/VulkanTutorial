@@ -1,4 +1,4 @@
-// Complete through https://vulkan-tutorial.com/en/Vertex_buffers/Staging_buffer
+// Complete through https://vulkan-tutorial.com/en/Vertex_buffers/Index_buffer
 
 //#include <vulkan/vulkan.h>
 #define VK_USE_PLATFORM_WIN32_KHR
@@ -56,9 +56,12 @@ struct Vertex
     }
 };
 
-const std::vector<Vertex> vertices = { {{ 0.0, -0.5}, {1.0, 0.0, 0.0}},
-                                       {{ 0.5,  0.5}, {0.0, 1.0, 0.0}},
-                                       {{-0.5,  0.5}, {0.0, 0.0, 1.0}} };
+const std::vector<Vertex> vertices = { {{-0.5, -0.5}, {1.0, 0.0, 0.0}},
+                                       {{ 0.5, -0.5}, {0.0, 1.0, 0.0}},
+                                       {{ 0.5,  0.5}, {0.0, 0.0, 1.0}},
+                                       {{-0.5,  0.5}, {1.0, 1.0, 1.0}} };
+
+const std::vector<uint16_t> indices = { 0, 1, 2, 0, 2, 3 };
 
 class HelloTriangleApplication
 {
@@ -106,6 +109,7 @@ private:
         createFrameBuffers();
         createCommandPool();
         createVertexBuffers();
+        createIndexBuffers();
         createCommandBuffer();
         createSyncObjects();
     }
@@ -132,7 +136,9 @@ private:
         cleanupSwapchain();
 
         vkDestroyBuffer(device, vertex_buffer, nullptr);
+        vkDestroyBuffer(device, index_buffer, nullptr);
         vkFreeMemory(device, vertex_buffer_mem, nullptr);
+        vkFreeMemory(device, index_buffer_mem, nullptr);
         vkDestroyDevice(device, nullptr);
         destroyDebugMessenger();
         vkDestroySurfaceKHR(instance, surface, nullptr);
@@ -1054,8 +1060,11 @@ private:
         VkDeviceSize vb_offsets[] = { 0 };
         vkCmdBindVertexBuffers(command_buffer, 0, 1, vtx_buffers, vb_offsets);
 
+        // Bind the index buffer
+        vkCmdBindIndexBuffer(command_buffer, index_buffer, 0, VK_INDEX_TYPE_UINT16);
+
         // Submit a draw call
-        vkCmdDraw(command_buffer, static_cast<uint32_t>(vertices.size()), 1, 0, 0);
+        vkCmdDrawIndexed(command_buffer, static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
 
         // End the render pass and finish recording
         vkCmdEndRenderPass(command_buffer);
@@ -1213,6 +1222,38 @@ private:
         vkDestroyBuffer(device, staging, nullptr);
         vkFreeMemory(device, staging_mem, nullptr);
     }
+    
+    void createIndexBuffers()
+    {
+        VkDeviceSize ib_size = sizeof(indices[0]) * indices.size(); // ib size in bytes
+
+        VkBuffer staging = VK_NULL_HANDLE;
+        VkDeviceMemory staging_mem = VK_NULL_HANDLE;
+        createBuffer( ib_size,
+                      VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                      staging,
+                      staging_mem );
+
+        // Map & fill staging buffer
+        void* data;
+        vkMapMemory(device, staging_mem, 0, VK_WHOLE_SIZE, 0, &data);
+        memcpy(data, indices.data(), (size_t)ib_size);
+        vkUnmapMemory(device, staging_mem);
+
+        // Create the on-device index buffer & copy data from staging
+        createBuffer(ib_size,
+            VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            index_buffer,
+            index_buffer_mem);
+
+        copyBuffer(staging, index_buffer, ib_size);
+
+        // Clean up
+        vkDestroyBuffer(device, staging, nullptr);
+        vkFreeMemory(device, staging_mem, nullptr);
+    }
 
     void populateDebugMessengerCI(VkDebugUtilsMessengerCreateInfoEXT& ci)
     {
@@ -1297,6 +1338,8 @@ private:
     VkCommandBuffer             command_buffer      = VK_NULL_HANDLE;
     VkBuffer                    vertex_buffer       = VK_NULL_HANDLE;
     VkDeviceMemory              vertex_buffer_mem   = VK_NULL_HANDLE;
+    VkBuffer                    index_buffer        = VK_NULL_HANDLE;
+    VkDeviceMemory              index_buffer_mem    = VK_NULL_HANDLE;
 
     VkSemaphore                 sem_image_available;
     VkSemaphore                 sem_render_complete;
