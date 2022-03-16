@@ -1,4 +1,4 @@
-// Complete through https://vulkan-tutorial.com/en/Uniform_buffers/Descriptor_layout_and_buffer
+// Complete through https://vulkan-tutorial.com/en/Texture_mapping/Images
 
 //#include <vulkan/vulkan.h>
 #define VK_USE_PLATFORM_WIN32_KHR
@@ -37,6 +37,7 @@ struct Vertex
 {
     glm::vec2 pos;
     glm::vec3 color;
+    glm::vec2 texcoord;
 
     static VkVertexInputBindingDescription getBindingDesc()
     {
@@ -47,9 +48,9 @@ struct Vertex
         return bind_desc;
     }
 
-    static std::array<VkVertexInputAttributeDescription, 2> getAttribDesc()
+    static std::array<VkVertexInputAttributeDescription, 3> getAttribDesc()
     {
-        std::array<VkVertexInputAttributeDescription, 2> attrib_desc{};
+        std::array<VkVertexInputAttributeDescription, 3> attrib_desc{};
         attrib_desc[0].binding = 0;     // Matches binding index 0 above
         attrib_desc[0].location = 0;    // Input location in shader (position attribute)
         attrib_desc[0].format = VK_FORMAT_R32G32_SFLOAT;    // 2 32-bit floats    
@@ -59,6 +60,11 @@ struct Vertex
         attrib_desc[1].location = 1;    // Input location in shader (color attribute
         attrib_desc[1].format = VK_FORMAT_R32G32B32_SFLOAT; // 3 32-bit floats    
         attrib_desc[1].offset = offsetof(Vertex, color);    // 2nd element
+
+        attrib_desc[2].binding = 0;     // Matches binding index 0 above
+        attrib_desc[2].location = 2;    // Input location in shader (texcoord)
+        attrib_desc[2].format = VK_FORMAT_R32G32_SFLOAT;    // 2 32-bit floats    
+        attrib_desc[2].offset = offsetof(Vertex, texcoord); // 3nd element
 
         return attrib_desc;
     }
@@ -74,10 +80,10 @@ struct mvp_ubo
     alignas(16) glm::mat4 projection;
 };
 
-const std::vector<Vertex> vertices = { {{-0.5, -0.5}, {1.0, 0.0, 0.0}},
-                                       {{ 0.5, -0.5}, {0.0, 1.0, 0.0}},
-                                       {{ 0.5,  0.5}, {0.0, 0.0, 1.0}},
-                                       {{-0.5,  0.5}, {1.0, 1.0, 1.0}} };
+const std::vector<Vertex> vertices = { {{-0.5, -0.5}, {1.0, 0.0, 0.0}, {1.0f, 0.0f}},
+                                       {{ 0.5, -0.5}, {0.0, 1.0, 0.0}, {0.0f, 0.0f}},
+                                       {{ 0.5,  0.5}, {0.0, 0.0, 1.0}, {0.0f, 1.0f}},
+                                       {{-0.5,  0.5}, {1.0, 1.0, 1.0}, {1.0f, 1.0f}} };
 
 const std::vector<uint16_t> indices = { 0, 1, 2, 0, 2, 3 };
 
@@ -127,11 +133,12 @@ private:
         createGraphicsPipeline();
         createFrameBuffers();
         createUniformBuffers();
-        createDescriptorPool();
-        createDescriptorSets();
         createCommandPool();
         createTextureImage();
+        createTexImageView();
         createTextureSampler();
+        createDescriptorPool();
+        createDescriptorSets();
         createVertexBuffers();
         createIndexBuffers();
         createSyncObjects();
@@ -877,13 +884,22 @@ private:
         ubo_layout.descriptorCount = 1;
         ubo_layout.pImmutableSamplers = nullptr;
 
+        VkDescriptorSetLayoutBinding tex_layout{};
+        tex_layout.binding = 1;    // Matches vertex shader binding layout
+        tex_layout.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT; // Consumed only in frag shader
+        tex_layout.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        tex_layout.descriptorCount = 1;
+        tex_layout.pImmutableSamplers = nullptr;
+
+        std::array<VkDescriptorSetLayoutBinding, 2> bindings = { ubo_layout, tex_layout };
+
         VkDescriptorSetLayoutCreateInfo ds_ci = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, nullptr };
-        ds_ci.bindingCount = 1;
-        ds_ci.pBindings = &ubo_layout;
+        ds_ci.bindingCount = static_cast<uint32_t>(bindings.size());
+        ds_ci.pBindings = bindings.data();
 
         if (VK_SUCCESS != vkCreateDescriptorSetLayout(device, &ds_ci, nullptr, &ubo_desc_layout))
         {
-            throw std::runtime_error("Failed to create ubo descriptor set layout");
+            throw std::runtime_error("Failed to create descriptor set layout");
         }
 
     }
@@ -1520,13 +1536,15 @@ private:
 
     void createDescriptorPool()
     {
-        VkDescriptorPoolSize pool_size{};
-        pool_size.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        pool_size.descriptorCount = MAX_FRAMES_IN_FLIGHT;
+        std::array<VkDescriptorPoolSize, 2> pool_sizes{};
+        pool_sizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        pool_sizes[0].descriptorCount = MAX_FRAMES_IN_FLIGHT;
+        pool_sizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        pool_sizes[1].descriptorCount = MAX_FRAMES_IN_FLIGHT;
 
         VkDescriptorPoolCreateInfo dp_ci = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, nullptr };
-        dp_ci.poolSizeCount = 1;
-        dp_ci.pPoolSizes = &pool_size;
+        dp_ci.poolSizeCount = static_cast<uint32_t>(pool_sizes.size());
+        dp_ci.pPoolSizes = pool_sizes.data();
         dp_ci.maxSets = MAX_FRAMES_IN_FLIGHT;
 
         if (VK_SUCCESS != vkCreateDescriptorPool(device, &dp_ci, nullptr, &descriptor_pool))
@@ -1558,17 +1576,29 @@ private:
             bi.offset = 0;
             bi.range = sizeof(mvp_ubo);
             
-            VkWriteDescriptorSet write_info = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr };
-            write_info.dstSet = descriptor_sets[i];
-            write_info.dstBinding = 0;
-            write_info.dstArrayElement = 0;
-            write_info.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-            write_info.descriptorCount = 1;
-            write_info.pBufferInfo = &bi;
-            write_info.pImageInfo = nullptr;        // 
-            write_info.pTexelBufferView = nullptr;  // 
+            VkDescriptorImageInfo ti{};
+            ti.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            ti.imageView = tex_image_view;
+            ti.sampler = tex_sampler;
 
-            vkUpdateDescriptorSets(device, 1, &write_info, 0, nullptr);
+            std::array<VkWriteDescriptorSet, 2> write_info{};
+            for (auto& wi : write_info)
+            {
+                wi.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                wi.pNext = nullptr;
+                wi.dstSet = descriptor_sets[i];
+                wi.dstArrayElement = 0;
+                wi.descriptorCount = 1;
+            }
+            write_info[0].dstBinding = 0;
+            write_info[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            write_info[0].pBufferInfo = &bi;
+
+            write_info[1].dstBinding = 1;
+            write_info[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            write_info[1].pImageInfo = &ti;        // 
+
+            vkUpdateDescriptorSets(device, static_cast<uint32_t>(write_info.size()), write_info.data(), 0, nullptr);
         }
     }
 
